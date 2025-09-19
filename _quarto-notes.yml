@@ -1,0 +1,67 @@
+project:
+  type: website
+  output-dir: _output/
+  post-render: quarto render --profile slides
+
+  render: 
+    - "*.qmd"  # rend tous les fichiers .qmd par défaut
+
+website:
+  title: "Emmanuel BRUNO"
+  open-graph: true
+  page-navigation: true
+  bread-crumbs: true
+  navbar:
+    background: primary
+    left:
+      - href: index.qmd
+        text: Home
+      - text: "EB"
+        href: https://bruno.univ-tln.fr
+      - text: "I111"
+        href: https://bruno.univ-tln.fr/I111.html
+      - text: "I211"
+        href: https://bruno.univ-tln.fr/I211.html
+      - text: "PO43"
+        href: https://bruno.univ-tln.fr/PO43.html
+      - text: "PM44"
+        href: https://bruno.univ-tln.fr/PM44.html
+      - text: "I311"
+        href: https://bruno.univ-tln.fr/I311.html
+
+  sidebar:
+    style: docked
+    contents: auto
+  comments: 
+    utterances:
+      repo: ebpro/utterances
+
+format:  
+  typst:
+    toc: true
+    section-numbering: 1.1.a
+    columns: 2
+    titlepage: true
+    figure-numbering: true
+    table-numbering: true
+    citation-style: apa
+    font-family: "Linux Libertine"
+    font-size: 12pt
+    color: "#333366"
+    header: "Titre du document"
+    footer: "Page {page}"
+
+  html:
+    theme: 
+      light: [flatly, _quarto-utils/custom.scss]
+      dark:  [darkly,  _quarto-utils/custom.scss]  
+      #light: [flatly]
+      #dark:  [darkly]  
+
+    toc: true
+
+format-links:
+  - html
+  - format: typst
+    text: PDF
+    icon: file-pdf

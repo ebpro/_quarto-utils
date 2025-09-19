@@ -1,0 +1,46 @@
+profile:
+  default: slides
+  group: 
+    - [notes, slides]
+
+author:
+    - name: "Emmanuel BRUNO"
+      email: "emmanuel.bruno@univ-tln.fr"
+      url: "https://bruno.univ-tln.fr"
+institute: 
+    - Université de Toulon
+    - LIS UMR CNRS 7020
+affiliations:
+    - name: Université de Toulon
+    - name: LIS UMR CNRS 7020
+date: last-modified
+date-format: iso
+license: "CC BY-NC"
+
+language: 
+  title-block-author-single: "Auteur"
+lang: fr
+
+execute:
+  echo: false
+  output: false
+  error: false
+  warning: true
+  #freeze: auto  # re-render only when source changes
+  cache: true
+  timeout: 60
+
+
+filters:
+   - quarto
+   - include-code-files
+   - line-highlight
+   - lua-env
+   - add-code-files
+   - code-fullscreen
+   - roughnotation
+   - code-visibility
+
+extensions:
+    - _extensions/kazuyanagimoto/clean
+    - _extensions/grantmcdermott/clean  

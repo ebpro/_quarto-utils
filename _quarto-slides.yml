@@ -1,0 +1,49 @@
+project:
+  output-dir: _output/_slides
+  render:
+    - "*_L_*.qmd"
+
+format:
+  clean-revealjs:
+
+    # Presentation settings
+    # theme: [clean, _quarto-utils/custom.scss]
+
+    theme: [_quarto-utils/custom.scss]
+    highlight-style: github
+    footer: "E. Bruno - {{< meta title >}}"
+    slide-level: 3
+    navigation-mode: vertical
+    slide-number: c/t
+
+    # Code display
+    code-overflow: wrap
+    code-block-bg: true
+    code-copy: true
+    code-line-numbers: true
+
+    # Features
+    multiplex: false
+    transition: slide
+    progress: true
+    scrollable: true
+    preview-links: true
+
+    # Controls
+    controls: true
+    controls-layout: bottom-right
+
+    # Plugins
+    chalkboard: 
+      enabled: true
+      buttons: true
+    
+    # PDF Export
+    pdf-separate-fragments: true
+    
+    # Performance
+    # embed-resources: true
+    smaller: true
+
+revealjs-plugins:
+  - verticator
