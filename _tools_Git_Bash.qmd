@@ -1,0 +1,8 @@
+```{bash}
+#| output: asis
+#| echo: false
+echo
+
+./_quarto-utils/_tools_Git.sh
+```
+

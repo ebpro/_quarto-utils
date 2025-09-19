@@ -1,0 +1,104 @@
+/*-- scss:rules --*/
+// Labels pour input / output sur cellules de code Quarto
+
+$label-bg-input: rgba(33, 37, 41, 0.9);
+$label-bg-output: rgba(0, 123, 255, 0.9);
+$label-color: #ffffff;
+$label-font-size: 0.65rem;
+$label-padding: 0.12rem 0.5rem;
+$label-radius: 0.25rem;
+$label-top-gap: 1.6rem; // espace laissé en haut du bloc pour le label
+
+// --- Narrowed selectors: target only the outermost code container per .cell
+.cell > .code-copy-outer-scaffold > .sourceCode.cell-code,
+.cell > .sourceCode.cell-code,
+.cell > pre.sourceCode:first-of-type,
+.cell > .cell-code:first-of-type {
+  position: relative;
+  padding-top: $label-top-gap;
+}
+
+/* ::before for input label — same narrow selectors so only one pseudo-element per cell */
+.cell > .code-copy-outer-scaffold > .sourceCode.cell-code::before,
+.cell > .sourceCode.cell-code::before,
+.cell > pre.sourceCode:first-of-type::before,
+.cell > .cell-code:first-of-type::before {
+  content: "Input";
+  position: absolute;
+  left: 0.6rem;
+  top: 0.4rem;
+  background: $label-bg-input;
+  color: $label-color;
+  font-size: $label-font-size;
+  padding: $label-padding;
+  border-radius: $label-radius;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  z-index: 60; /* visible above copy buttons / overlays */
+  box-shadow: 0 1px 0 rgba(0,0,0,0.15);
+  pointer-events: none; /* don't intercept clicks (copy buttons etc.) */
+}
+
+// Sélecteurs de sortie (output) — cibler les zones de sortie rendues et conserver la bordure très légère
+.cell > .output_area,
+.cell > .output,
+.cell.output,
+div.output,
+.output_area,
+.rendered_html,
+.quarto-output,
+.html-widget,
+.figure,
+div.cell-output {
+  position: relative;
+  padding-top: $label-top-gap;
+  border: 1px solid rgba(0,0,0,0.3); /* bordure très légère */
+  border-radius: 0.25rem;
+  background-clip: padding-box;
+}
+
+.cell > .output_area::before,
+.cell > .output::before,
+.cell.output::before,
+div.output::before,
+.output_area::before,
+.rendered_html::before,
+.quarto-output::before,
+.html-widget::before,
+.figure::before,
+div.cell-output::before {
+  content: "Output";
+  position: absolute;
+  left: 0.6rem;
+  top: 0.4rem;
+  background: $label-bg-output;
+  color: $label-color;
+  font-size: $label-font-size;
+  padding: $label-padding;
+  border-radius: $label-radius;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  z-index: 5;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.12);
+}
+
+/* Option responsive : réduire la taille du label sur petits écrans */
+@media (max-width: 640px) {
+  pre.sourceCode,
+  div.highlight,
+  .rendered_html,
+  .quarto-output,
+  .output_area {
+    padding-top: 1.2rem;
+  }
+  pre.sourceCode::before,
+  div.highlight::before,
+  .rendered_html::before,
+  .quarto-output::before,
+  .output_area::before {
+    font-size: 0.6rem;
+    left: 0.4rem;
+    top: 0.32rem;
+    padding: 0.08rem 0.4rem;
+  }
+}

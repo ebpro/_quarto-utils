@@ -1,0 +1,10 @@
+```{zsh}
+#| output: asis
+#| echo: false
+#| vscode:
+#|   languageId: scriptshell
+echo
+
+./_quarto-utils/_tools_Git.sh
+```
+

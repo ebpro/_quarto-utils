@@ -1,0 +1,7 @@
+```{java}
+//| echo: false
+//| output: asis
+%%shell
+./_quarto-utils/_tools_Java.sh
+```
+

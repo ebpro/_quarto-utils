@@ -1,0 +1,7 @@
+```{zsh}
+#| output: asis
+#| echo: false
+#| vscode:
+#|   languageId: scriptshell
+./_quarto-utils/_tools_Java.sh
+```
