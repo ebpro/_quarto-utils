@@ -1,0 +1,79 @@
+x-common-config: &common-config
+  user: root
+  environment: &common-env
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_CERT_PATH: /certs/client
+    DOCKER_TLS_CERTDIR: /certs
+    DOCKER_TLS_VERIFY: 1
+    DB_USERNAME: ${DB_USERNAME:-dba}
+    DB_PASSWORD: ${DB_PASSWORD:-secretsecret}
+    DB_URL: ${DB_URL:-jdbc:postgresql://docker/notebook-db}
+  volumes: &common-volumes
+    - ${PWD}:/home/jovyan/work/local
+    - jupyter-work:/home/jovyan/work/
+    - certs-client:/certs/client:ro
+  networks:
+    - notebooknet
+  depends_on:
+    docker:
+      condition: service_healthy
+
+services:
+  docker:
+    image: docker:27-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    volumes:
+      - certs-ca:/certs/ca
+      - certs-client:/certs/client
+    networks:
+      - notebooknet
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+
+  devcontainer:
+    <<: *common-config
+    image: ${IMAGE_REPO}/${IMAGE_NAME}:${IMAGE_TAG}
+    environment:
+      <<: *common-env
+      GITHUBORG: ${GITHUBORG}
+      GITHUB_PAT: ${GITHUB_PAT}
+      GITHUBACTOR: ${GITHUBACTOR}
+      GITHUBTOKEN: ${GITHUBTOKEN}
+      DOCKERHUB_USERNAME: ${DOCKERHUB_USERNAME}
+      DOCKERHUB_TOKEN: ${DOCKERHUB_TOKEN}
+    command: sleep infinity      
+    volumes: *common-volumes
+
+  notebook-builder:
+    <<: *common-config
+    image: ${IMAGE_REPO}/${IMAGE_NAME}:${IMAGE_TAG}
+    environment:
+      <<: *common-env
+      GITHUBORG: ${GITHUBORG}
+      GITHUB_PAT: ${GITHUB_PAT}
+      GITHUBACTOR: ${GITHUBACTOR}
+      GITHUBTOKEN: ${GITHUBTOKEN}
+      DOCKERHUB_USERNAME: ${DOCKERHUB_USERNAME}
+      DOCKERHUB_TOKEN: ${DOCKERHUB_TOKEN}
+    working_dir: /home/jovyan/work/local/
+    command: quarto-utils/_utils/build.sh ${ARGS:-}
+    volumes: *common-volumes
+
+volumes:
+  certs-ca:
+  certs-client:
+  workdir:
+  jupyter-work:
+  
+networks:
+  notebooknet:

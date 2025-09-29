@@ -5,7 +5,7 @@ project:
 
   render: 
     - "*.qmd"  # rend tous les fichiers .qmd par défaut
-
+    - "!HIDDEN"  # ignore les fichiers marqués HIDDEN
 website:
   title: "Emmanuel BRUNO"
   open-graph: true
