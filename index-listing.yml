@@ -5,38 +5,41 @@ listing:
     - "!index.qmd"
     - "!_*.qmd"
   sort:
-    - "filename"
     - "date desc"
     - "title asc"
-  
+    - "filename"
+
   # Visual presentation
   type: grid
   grid-columns: 3
   grid-item-border: true
   image-height: 250px
-  page-size: 9
-  
+
   # Metadata display
   fields:
     - "title"
     - "subtitle"
     - "description"
     - "date"
-#    - "image"
+    - "image"
     - "categories"
-#    - "reading-time"
-  
+    - "programs"
+    - "reading-time"
+
   # Navigation and filtering
   categories: true
-  sort-ui: true
+  sort-ui: [date, title, filename]
   filter-ui: true
   date-format: "DD MMMM YYYY"
-  
+
   # Custom template
   template: ./_quarto-utils/gallery.ejs
-  
+
+  # Page size: show more items per page for index
+  page-size: 12
+
   # Feed generation
-  #feed: 
+  #feed:
   #  title: "Docker Training Materials"
   #  description: "Cours et exercices sur Docker et la conteneurisation"
   #  categories:

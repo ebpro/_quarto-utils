@@ -1,5 +1,0 @@
-```{bash}
-#| output: asis
-#| echo: false
-./_quarto-utils/_tools_Docker.sh
-```

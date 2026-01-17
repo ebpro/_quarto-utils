@@ -3,7 +3,7 @@ project:
   output-dir: _output/
   post-render: quarto render --profile slides
 
-  render: 
+  render:
     - "*.qmd"  # rend tous les fichiers .qmd par défaut
     - "!HIDDEN"  # ignore les fichiers marqués HIDDEN
 website:
@@ -32,11 +32,11 @@ website:
   sidebar:
     style: docked
     contents: auto
-  comments: 
-    utterances:
-      repo: ebpro/utterances
+  #comments:
+    #utterances:
+      #repo: ebpro/utterances
 
-format:  
+format:
   typst:
     toc: true
     section-numbering: 1.1.a
@@ -52,11 +52,11 @@ format:
     footer: "Page {page}"
 
   html:
-    theme: 
-      light: [flatly, _quarto-utils/custom.scss]
-      dark:  [darkly,  _quarto-utils/custom.scss]  
-      #light: [flatly]
-      #dark:  [darkly]  
+    theme:
+      light: [flatly]
+      dark:  [darkly]
+    css:
+      - _quarto-utils/output-highlight.css
 
     toc: true
 

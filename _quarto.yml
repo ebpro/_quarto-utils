@@ -1,13 +1,13 @@
 profile:
   default: slides
-  group: 
+  group:
     - [notes, slides]
 
 author:
     - name: "Emmanuel BRUNO"
       email: "emmanuel.bruno@univ-tln.fr"
       url: "https://bruno.univ-tln.fr"
-institute: 
+institute:
     - Université de Toulon
     - LIS UMR CNRS 7020
 affiliations:
@@ -17,7 +17,7 @@ date: last-modified
 date-format: iso
 license: "CC BY-NC"
 
-language: 
+language:
   title-block-author-single: "Auteur"
 lang: fr
 
@@ -32,15 +32,23 @@ execute:
 
 
 filters:
-   - quarto
-   - include-code-files
-   - line-highlight
-   - lua-env
-   - add-code-files
-   - code-fullscreen
-   - roughnotation
-   - code-visibility
+  - quarto
+  - _quarto-utils/_include-tools.lua
+  - include-code-files
+  - line-highlight
+  - lua-env
+  - add-code-files
+  - code-fullscreen
+  - roughnotation
+  - code-visibility
 
 extensions:
     - _extensions/kazuyanagimoto/clean
-    - _extensions/grantmcdermott/clean  
+    - _extensions/grantmcdermott/clean
+
+project:
+  resources:
+    - _quarto-utils/MyMedia/**
+
+format:
+  html: {}

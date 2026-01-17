@@ -1,0 +1,18 @@
+---
+# Tools — Zsh environment
+---
+
+::: {.content-visible when-profile="notes"}
+### Kernel — capacités techniques (Zsh)
+
+Ce snippet décrit les capacités du kernel `zsh` pour exécuter des cellules shell (zsh). Il n'indique pas automatiquement quels outils sont installés sur l'hôte.
+
+Pour effectuer une détection réelle des outils, définissez `tools:` dans le frontmatter de la page (ex. `tools: [docker, git]`). Le filtre Lua produira alors un bloc effectuant la détection et affichant un tableau de version.
+
+:::
+
+::: {.content-visible when-profile="slides"}
+### Kernel — capacités (Zsh)
+
+- **Kernel**: `zsh` — exécution de cellules shell zsh
+:::

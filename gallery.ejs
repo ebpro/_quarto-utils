@@ -1,263 +1,542 @@
 ```{=html}
-<div class="course-gallery">
-  <% for (const item of items) { %>
-    <article class="course-card <%= item.categories?.includes('Exercices') ? 'is-exercise' : '' %>">
-      <div class="card-content">
-        <header>
-          <h3><%- item.title %></h3>
-          <% if (item.subtitle) { %>
-            <p class="subtitle"><%- item.subtitle %></p>
-            <% } %>
-        </header>
+<%
+  // First pass: collect all unique programs and content types
+  const allPrograms = new Set();
+  const allContentTypes = new Set();
 
-        <% if (item.description) { %>
-          <div class="description"><%- item.description %></div>
-          <% } %>
-
-            <div class="actions">
-              <% if (item.provide_notes !==false) { %>
-                <a href="<%= item.path.replace('.qmd', '.html') %>" class="btn-notes">
-                  <i class="bi bi-book"></i>
-                  <%- item.categories?.includes('Exercices') ? 'Sujet' : 'Notes' %>
-                </a>
-                <% } %>
-                  <% if (item.provide_slides !==false) { %>
-                    <a href="_slides<%= item.path.replace('.qmd', '.html') %>" class="btn-slides">
-                      <i class="bi bi-easel"></i> Slides
-                    </a>
-                    <% } %>
-            </div>
-
-            <% if (item.categories?.length> 0) { %>
-              <div class="categories">
-                <% for (const category of item.categories) { %>
-                  <span class="category-tag"><%- category %></span>
-                  <% } %>
-              </div>
-              <% } %>
-      </div>
-
-      <% if (item.date) { %>
-        <footer>
-          <time><%- item.date %></time>
-        </footer>
-        <% } %>
-    </article>
-    <% } %>
-</div>
-
-<style>
-  /* Base layout */
-  .course-gallery {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 2rem;
-    padding: 1.5rem;
-    max-width: 1400px;
-    margin: 0 auto;
-  }
-
-  /* Card styling */
-  .course-card {
-    display: flex;
-    flex-direction: column;
-    background: var(--quarto-body-bg, #ffffff);
-    border: 1px solid var(--quarto-border-color, #e1e4e8);
-    border-radius: 8px;
-    transition: all 0.2s ease;
-    overflow: hidden;
-  }
-
-  .course-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-    border-color: var(--quarto-primary, #0366d6);
-  }
-
-  /* Card content */
-  .card-content {
-    flex: 1;
-    padding: 1.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  /* Header styles */
-  header h3 {
-    margin: 0;
-    color: var(--quarto-heading-color, #24292e);
-    font-size: 1.25rem;
-    line-height: 1.4;
-    font-weight: 600;
-  }
-
-  .subtitle {
-    color: var(--quarto-text-muted, #6a737d);
-    font-size: 0.9rem;
-    margin: 0.5rem 0 0;
-    line-height: 1.4;
-  }
-
-  /* Description */
-  .description {
-    color: var(--quarto-text-color, #24292e);
-    font-size: 0.95rem;
-    line-height: 1.6;
-    margin: 0;
-    flex-grow: 1;
-  }
-
-  /* Action buttons */
-  .actions {
-    display: flex;
-    gap: 1rem;
-    margin: 1rem 0;
-  }
-
-  .actions a {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.5rem;
-    padding: 0.75rem 1.25rem;
-    border-radius: 6px;
-    text-decoration: none;
-    font-weight: 500;
-    min-width: 120px;
-    transition: all 0.2s ease;
-  }
-
-  .btn-notes {
-    background: var(--quarto-primary, #0366d6);
-    color: white !important;
-    border: 1px solid transparent;
-  }
-
-  .btn-slides {
-    background: var(--quarto-secondary, #2ea44f);
-    color: white !important;
-    border: 1px solid transparent;
-  }
-
-  .btn-notes:hover,
-  .btn-slides:hover {
-    transform: translateY(-1px);
-    filter: brightness(110%);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  }
-
-  /* Categories */
-  .categories {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-top: auto;
-    padding-top: 1rem;
-  }
-
-  .category-tag {
-    font-size: 0.8rem;
-    padding: 0.25rem 0.75rem;
-    background: var(--quarto-bg-light, #f6f8fa);
-    color: var(--quarto-text-muted, #6a737d);
-    border-radius: 12px;
-    transition: all 0.2s ease;
-  }
-
-  .category-tag:hover {
-    background: var(--quarto-primary, #0366d6);
-    color: white;
-  }
-
-  /* Footer */
-  footer {
-    padding: 1rem 1.5rem;
-    border-top: 1px solid var(--quarto-border-color, #e1e4e8);
-    color: var(--quarto-text-muted, #6a737d);
-    font-size: 0.9rem;
-    background: var(--quarto-bg-light, #f6f8fa);
-  }
-
-  /* Icons */
-  .bi {
-    display: inline-block;
-    width: 1em;
-    height: 1em;
-    vertical-align: -0.125em;
-    font-size: 1.1em;
-  }
-
-  /* Dark mode adjustments */
-  @media (prefers-color-scheme: dark) {
-    .course-card {
-      background: var(--quarto-body-bg, #0d1117);
-      border-color: var(--quarto-border-color, #30363d);
-    }
-
-    .category-tag {
-      background: var(--quarto-bg-light, #21262d);
-    }
-
-    footer {
-      background: var(--quarto-bg-light, #21262d);
-    }
-  }
-
-  /* Responsive design */
-  @media (max-width: 768px) {
-    .course-gallery {
-      grid-template-columns: 1fr;
-      padding: 1rem;
-      gap: 1.5rem;
-    }
-
-    .actions {
-      flex-direction: column;
-    }
-
-    .actions a {
-      width: 100%;
-    }
-
-    .card-content {
-      padding: 1.25rem;
-    }
-  }
-
-  /* Print styles */
-  @media print {
-    .course-gallery {
-      display: block;
-    }
-
-    .course-card {
-      break-inside: avoid;
-      margin-bottom: 2rem;
-    }
-
-    .actions {
-      display: none;
-    }
-
-    /* Special styling for exercise cards */
-    .course-card.is-exercise {
-      background: var(--quarto-exercise-bg, #f0f7ff);
-      border-color: var(--quarto-primary-light, #79b8ff);
-    }
-
-    .course-card.is-exercise:hover {
-      box-shadow: 0 4px 12px rgba(3, 102, 214, 0.2);
-    }
-
-    /* Dark mode adjustments */
-    @media (prefers-color-scheme: dark) {
-      .course-card.is-exercise {
-        background: var(--quarto-exercise-bg, #1d2d3e);
-        border-color: var(--quarto-primary-light, #1f6feb);
+  for (const item of items) {
+    const frontPrograms = Array.isArray(item.programs) ? item.programs : [];
+    for (const prog of frontPrograms) {
+      const progStr = String(prog || '');
+      const match = progStr.match(/^([^\[]+)\s*\[([^\]]+)\]$/);
+      if (match) {
+        const codes = match[2].split(/[\s,]+/).map(c => c.trim()).filter(c => c);
+        codes.forEach(code => allPrograms.add(code));
       }
     }
 
+    // Extract content type (first category: Lecture, Practice, Demo, etc.)
+    const categories = item.categories || [];
+    const contentType = categories[0] || '';
+    if (contentType) allContentTypes.add(contentType);
   }
-</style>
+
+  const sortedPrograms = Array.from(allPrograms).sort();
+  const sortedContentTypes = Array.from(allContentTypes).sort();
+%>
+
+<!-- Filter sections -->
+<div class="filter-sections">
+  <!-- Programs and Content types in two columns -->
+  <div class="filter-sections-row">
+    <!-- Programs filter -->
+    <% if (sortedPrograms.length > 0) { %>
+    <div class="filter-section filter-half">
+      <h4 class="filter-section-title">Programmes</h4>
+      <div class="filter-buttons program-filters">
+        <%
+          // Group programs by name
+          const programsByName = new Map();
+          for (const item of items) {
+            const frontPrograms = Array.isArray(item.programs) ? item.programs : [];
+            for (const prog of frontPrograms) {
+              const progStr = String(prog || '');
+              const match = progStr.match(/^([^\[]+)\s*\[([^\]]+)\]$/);
+              if (match) {
+                const programName = match[1].trim();
+                const codes = match[2].split(/[\s,]+/).map(c => c.trim()).filter(c => c);
+                codes.forEach(code => {
+                  if (!programsByName.has(code)) {
+                    programsByName.set(code, programName);
+                  }
+                });
+              }
+            }
+          }
+        %>
+        <% for (const prog of sortedPrograms) { %>
+          <button class="filter-btn program-filter" data-program="<%- prog %>">
+            <span class="program-name"><%- programsByName.get(prog) || '' %></span>
+            <span class="program-code"><%- prog %></span>
+          </button>
+        <% } %>
+      </div>
+    </div>
+    <% } %>
+
+    <!-- Content types filter -->
+    <% if (sortedContentTypes.length > 0) { %>
+    <div class="filter-section filter-half">
+      <h4 class="filter-section-title">Type de contenu</h4>
+      <div class="filter-buttons content-type-filters">
+        <% for (const type of sortedContentTypes) { %>
+          <button class="filter-btn content-type-filter" data-content-type="<%- type %>">
+            <%- type %>
+          </button>
+        <% } %>
+      </div>
+    </div>
+    <% } %>
+  </div>
+</div>
+
+<div class="course-gallery list" role="list">
+  <% for (const item of items) { %>
+    <%
+      // Normalize path: strip leading ./ or / and ensure .html extension
+      const rawPath = String(item.path || '');
+      const notesPath = rawPath.replace(/^\.\//, '').replace(/^\//, '').replace(/\.qmd$/i, '.html');
+      const notesHref = './' + notesPath;
+
+      // Extract content type and tags from categories array (CONTENT-CONVENTIONS.md format)
+      const categories = item.categories || [];
+      const contentType = categories[0] || '';
+      const typeClass = contentType ? 'type-' + String(contentType).toLowerCase().replace(/\s+/g, '-') : '';
+      const techTags = categories.slice(1).filter(c => !(/^[A-Z]{2,4}\d+$/.test(c))); // Exclude course codes
+
+      // Course codes: either explicit in categories or derived from frontmatter overrides / program registry
+      let courseCodes = categories.slice(1).filter(c => /^[A-Z]{2,4}\d+$/.test(c)); // explicit course codes in categories
+
+      // Read `programs` declared on the item (frontmatter) and parse program names + course codes
+      // Format: "ProgramName [CODE1, CODE2]" or "ProgramName [CODE1]"
+      const frontPrograms = Array.isArray(item.programs) ? item.programs : [];
+      const programsList = [];
+
+      if (frontPrograms.length && (!courseCodes || courseCodes.length === 0)) {
+        // Parse programs in format: "M1-InfoMath [I111]" or "CNAM-I [PO43, DEV-EXP]"
+        for (const prog of frontPrograms) {
+          const progStr = String(prog || '');
+          const match = progStr.match(/^([^\[]+)\s*\[([^\]]+)\]$/);
+          if (match) {
+            const programName = match[1].trim();
+            const codes = match[2].split(/[\s,]+/).map(c => c.trim()).filter(c => c);
+            programsList.push({ name: programName, codes: codes });
+            courseCodes = courseCodes.concat(codes);
+          } else {
+            // fallback: treat as program name only (no codes)
+            programsList.push({ name: progStr.trim(), codes: [] });
+          }
+        }
+        // deduplicate course codes
+        courseCodes = Array.from(new Set(courseCodes));
+      } else if (frontPrograms.length) {
+        // programs present but courseCodes already extracted from categories → just parse names
+        for (const prog of frontPrograms) {
+          const progStr = String(prog || '');
+          const match = progStr.match(/^([^\[]+)\s*\[([^\]]+)\]$/);
+          programsList.push({ name: match ? match[1].trim() : progStr.trim(), codes: [] });
+        }
+      }
+    %>
+      <article class="course-card <%= typeClass %>" role="listitem"
+        data-index="<%= item.index %>"
+        data-categories="<%- (item.categories || []).join(',') %>"
+        data-listing-date-sort="<%= item.date || '' %>"
+        data-listing-filename="<%= notesPath %>">
+        <%
+          // Add hidden category spans for List.js filtering
+          for (const cat of (item.categories || [])) {
+        %>
+          <div class="listing-category" style="display:none;"><%- cat %></div>
+        <% } %>
+        <%
+          // Add hidden program spans for filtering
+          for (const prog of programsList) {
+            for (const code of prog.codes) {
+        %>
+          <div class="listing-program" style="display:none;"><%- code %></div>
+        <%
+            }
+          }
+        %>
+        <%
+          // Add hidden content type for filtering
+        %>
+        <div class="listing-content-type" style="display:none;"><%- contentType %></div>
+        <div class="card-link" role="link" tabindex="0" data-href="<%= notesHref %>"
+          aria-label="Ouvrir <%- item.title %>">
+          <figure class="card-figure" aria-hidden="true">
+            <% if (item.image) { %>
+              <%
+                // Normalize common path artifacts (leading ./ and /./ segments)
+                const raw = String(item.image || '');
+
+                // Normalize utility paths: collapse any leading folder prefix
+                // (e.g., "java/_quarto-utils/..." -> "_quarto-utils/...")
+                // so images resolve from the site root `_quarto-utils` directory in _output.
+                let normalized = raw.replace(/^\.\//, '').replace(/\/\.\//g, '/');
+                if (normalized.indexOf('_quarto-utils/') !== -1) {
+                  normalized = normalized.slice(normalized.indexOf('_quarto-utils/'));
+                }
+                const imgFile = normalized.replace(/^.*\//, '');
+                const base = imgFile.replace(/(?:-400|-800)?\.[^/.]+$/, '');
+                const extMatch = imgFile.match(/\.[^/.]+$/);
+                const ext = extMatch ? extMatch[0].toLowerCase() : '';
+
+                // Determine root directory for optimized images
+                let rootDir = '';
+                if (normalized.startsWith('/')) {
+                  rootDir = normalized.replace(/\/[^/]+$/, '').replace(/^\//, '');
+                } else if (normalized.includes('/')) {
+                  // relative path that includes a folder -> treat as site-relative (keep relative)
+                  rootDir = normalized.replace(/\/[^/]+$/, '').replace(/^\//, '');
+                } else {
+                  // bare filename: expect optimized variants in the utility media folder (relative)
+                  rootDir = '_quarto-utils/MyMedia/images/optimized';
+                }
+
+                let webp400 = rootDir + '/' + base + '-400.webp';
+                let webp800 = rootDir + '/' + base + '-800.webp';
+
+                // sensible fallback: prefer provided original if it has an image ext, otherwise fall back to webp
+                let fallback = '';
+                if (ext === '.webp' || imgFile.endsWith('-400.webp') || imgFile.endsWith('-800.webp')) {
+                  fallback = webp400;
+                } else if (ext === '.jpg' || ext === '.jpeg' || ext === '.png') {
+                  const originalDir = rootDir.replace(/\/optimized$/, '');
+                  fallback = originalDir + '/' + base + ext;
+                } else {
+                  fallback = webp400;
+                }
+
+                // ensure fallback is absolute (no leading ./)
+                if (fallback.startsWith('./')) {
+                  fallback = fallback.replace(/^\.\//, '');
+                }
+
+                // Emit relative URLs (no leading slash) so `_output/index.html` resolves to `_output/<path>`
+                webp400 = webp400.replace(/^\//, '');
+                webp800 = webp800.replace(/^\//, '');
+                fallback = fallback.replace(/^\//, '');
+              %>
+                  <picture>
+                    <source type="image/webp" srcset="<%= webp400 %> 400w, <%= webp800 %> 800w"
+                      sizes="(max-width:600px) 400px, 800px">
+                    <img src="<%- fallback %>" alt="<%- item.title || '' %>" loading="lazy" decoding="async"
+                      class="figure-img">
+                  </picture>
+                  <div class="img-overlay" aria-hidden="true">
+                    <% if (item.provide_notes !==false) { %>
+                      <a href="<%= notesHref %>" class="action-btn figure-cta" title="Ouvrir les notes">
+                        <i class="bi bi-book"></i>
+                      </a>
+                      <% } %>
+                        <% if (item.provide_slides !==false) { %>
+                          <a href="./_slides/<%= notesPath %>" class="action-btn figure-cta"
+                            title="Voir les slides (nouvel onglet)" target="_blank" rel="noopener">
+                            <i class="bi bi-easel"></i>
+                          </a>
+                          <% } %>
+                  </div>
+                  <% } else { %>
+                    <div class="card-placeholder" aria-hidden="true">
+                      <svg width="56" height="40" viewBox="0 0 56 40" fill="none" xmlns="http://www.w3.org/2000/svg"
+                        class="placeholder-svg" aria-hidden="true">
+                        <rect width="56" height="40" rx="4" fill="#e9eef4"></rect>
+                        <g transform="translate(8,8)" fill="#c1c7cf">
+                          <rect x="0" y="0" width="8" height="6" rx="1"></rect>
+                          <rect x="11" y="0" width="14" height="6" rx="1"></rect>
+                          <rect x="0" y="9" width="24" height="2" rx="1"></rect>
+                        </g>
+                      </svg>
+                    </div>
+                    <% } %>
+
+                      <% if (contentType) { %>
+                        <div class="content-type-banner">
+                          <span class="content-type-label"><%- contentType %></span>
+                        </div>
+                        <% } %>
+          </figure>
+
+          <div class="card-content">
+            <header>
+              <h3 class="listing-title"><%- item.title %></h3>
+              <% if (item.subtitle) { %>
+                <p class="subtitle listing-subtitle"><%- item.subtitle %></p>
+                <% } %>
+            </header>
+
+            <% if (item.description) { %>
+              <p class="description listing-description"><%- item.description %></p>
+              <% } %>
+
+                <div class="meta-row">
+                  <% if (item['reading-time']) { %>
+                    <span class="meta reading-time listing-reading-time"><i class="bi bi-clock"></i> <%-
+                        item['reading-time'] %></span>
+                    <% } %>
+                      <% if (item.date) { %>
+                        <time class="meta date listing-date"><i class="bi bi-calendar"></i> <%- item.date %></time>
+                        <% } %>
+                </div>
+
+                <% if (techTags && techTags.length) { %>
+                  <div class="categories tech-tags listing-categories" aria-label="Tags techniques">
+                    <% for (const tag of techTags) { %>
+                      <span class="category-tag"><%- tag %></span>
+                      <% } %>
+                  </div>
+                  <% } %>
+
+                <% if (programsList && programsList.length) { %>
+                  <div class="programs-text listing-programs" aria-label="Formations">
+                    <%
+                      const programsText = programsList.map(prog => {
+                        const codes = (prog.codes || []).join(', ');
+                        return codes ? `${prog.name}: ${codes}` : prog.name;
+                      }).join(' • ');
+                    %>
+                    <%- programsText %>
+                  </div>
+                <% } %>
+          </div>
+        </div>
+
+        <div class="card-actions" aria-hidden="true">
+          <% if (item.provide_notes !==false) { %>
+            <a href="<%= notesHref %>" class="action-btn" title="Ouvrir les notes">
+              <i class="bi bi-book"></i>
+            </a>
+            <% } %>
+              <% if (item.provide_slides !==false) { %>
+                <a href="_slides/<%= notesPath %>" class="action-btn" title="Voir les slides (nouvel onglet)"
+                  target="_blank" rel="noopener">
+                  <i class="bi bi-easel"></i>
+                </a>
+                <% } %>
+        </div>
+      </article>
+      <% } %>
+</div>
+<script>
+  /* Contrast detection for gallery images: samples a small region and marks .card-figure as is-dark/is-light */
+  (function () {
+    function isDarkImage(img) {
+      try {
+        var canvas = document.createElement('canvas');
+        var w = 40, h = 40;
+        canvas.width = w; canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        var data = ctx.getImageData(0, 0, w, h).data;
+        var lum = 0, count = 0;
+        for (var i = 0; i < data.length; i += 4) {
+          var r = data[i], g = data[i + 1], b = data[i + 2];
+          lum += 0.299 * r + 0.587 * g + 0.114 * b;
+          count++;
+        }
+        lum = lum / count;
+        return lum < 130; // threshold: lower = darker
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function annotate() {
+      var figs = document.querySelectorAll('.card-figure');
+      figs.forEach(function (f) {
+        var img = f.querySelector('img');
+        if (!img) return;
+        var applyClass = function () {
+          var dark = isDarkImage(img);
+          f.classList.add(dark ? 'is-dark' : 'is-light');
+        };
+        if (img.complete) { applyClass(); } else { img.addEventListener('load', applyClass); }
+      });
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', annotate);
+    else annotate();
+  })();
+
+  // Make `.card-link` divs behave like links (click + Enter)
+  (function () {
+    function navigate(e) {
+      var href = this.getAttribute('data-href');
+      if (!href) return;
+      if (e.type === 'click' || (e.type === 'keydown' && (e.key === 'Enter' || e.key === ' '))) {
+        window.location.href = href;
+      }
+    }
+    document.addEventListener('DOMContentLoaded', function () {
+      document.querySelectorAll('.card-link[ data-href], .card-link[data-href]').forEach(function (el) {
+        el.addEventListener('click', navigate);
+        el.addEventListener('keydown', navigate);
+      });
+    });
+  })();
+
+  // Category, Program, and Lecture Type filtering functionality with multi-select
+  (function() {
+    // Wait a bit to ensure Quarto's JS is loaded, then override it
+    setTimeout(function() {
+      var categoryButtons = document.querySelectorAll('.quarto-listing-category .category');
+      if (!categoryButtons.length) return;
+
+      // Track selected filters
+      var selectedCategories = new Set();
+      var selectedPrograms = new Set();
+      var selectedContentTypes = new Set();
+
+      // Force visual state update
+      function updateButtonStates() {
+        categoryButtons.forEach(function(btn) {
+          var encodedCategory = btn.getAttribute('data-category');
+          var categoryName = encodedCategory ? atob(encodedCategory) : '';
+
+          if (!categoryName) {
+            // "Tous" button
+            btn.classList.toggle('active', selectedCategories.size === 0);
+          } else {
+            btn.classList.toggle('active', selectedCategories.has(categoryName));
+          }
+        });
+      }
+
+      function sortArticlesByFilename() {
+        var container = document.querySelector('.course-gallery');
+        if (!container) return;
+        var articles = Array.from(container.querySelectorAll('.course-card'));
+        articles.sort(function(a,b){
+          var fa = (a.getAttribute('data-listing-filename')||'').toLowerCase();
+          var fb = (b.getAttribute('data-listing-filename')||'').toLowerCase();
+          return fa < fb ? -1 : (fa > fb ? 1 : 0);
+        });
+        articles.forEach(function(a){ container.appendChild(a); });
+      }
+
+      // perform default sort by filename
+      sortArticlesByFilename();
+
+      // (sorting UI hidden via CSS) - no need to update the Quarto sort select
+
+      function updateFilters() {
+        var articles = document.querySelectorAll('.course-card');
+
+        articles.forEach(function(article) {
+          var show = true;
+
+          // Filter by categories (AND logic: must have ALL selected categories)
+          if (selectedCategories.size > 0) {
+            var articleCategories = new Set();
+            article.querySelectorAll('.listing-category').forEach(function(cat) {
+              articleCategories.add(cat.textContent.trim());
+            });
+
+            // Check if article has ALL selected categories
+            var hasAllCategories = true;
+            selectedCategories.forEach(function(cat) {
+              if (!articleCategories.has(cat)) {
+                hasAllCategories = false;
+              }
+            });
+            if (!hasAllCategories) show = false;
+          }
+
+          // Filter by programs (AND logic: must have ALL selected programs)
+          if (show && selectedPrograms.size > 0) {
+            var articlePrograms = new Set();
+            article.querySelectorAll('.listing-program').forEach(function(prog) {
+              articlePrograms.add(prog.textContent.trim());
+            });
+
+            var hasAllPrograms = true;
+            selectedPrograms.forEach(function(prog) {
+              if (!articlePrograms.has(prog)) {
+                hasAllPrograms = false;
+              }
+            });
+            if (!hasAllPrograms) show = false;
+          }
+
+          // Filter by content types (AND logic: must have ALL selected types)
+          if (show && selectedContentTypes.size > 0) {
+            var articleType = article.querySelector('.listing-content-type');
+            var contentType = articleType ? articleType.textContent.trim() : '';
+
+            // Check if article content type matches any selected type
+            if (!selectedContentTypes.has(contentType)) {
+              show = false;
+            }
+          }
+
+          article.style.display = show ? '' : 'none';
+        });
+      }
+
+      // Category button handlers with capture to intercept before Quarto
+      categoryButtons.forEach(function(button) {
+        button.addEventListener('click', function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation(); // Prevent other handlers on same element
+
+          var encodedCategory = this.getAttribute('data-category');
+          var categoryName = encodedCategory ? atob(encodedCategory) : '';
+
+          if (!categoryName) {
+            // "Tous" button - clear all filters
+            selectedCategories.clear();
+            selectedPrograms.clear();
+            selectedContentTypes.clear();
+            // Clear program and lecture type buttons if they exist
+            document.querySelectorAll('.program-filter.active, .lecture-type-filter.active').forEach(function(btn) {
+              btn.classList.remove('active');
+            });
+          } else {
+            // Toggle category selection
+            if (selectedCategories.has(categoryName)) {
+              selectedCategories.delete(categoryName);
+            } else {
+              selectedCategories.add(categoryName);
+            }
+          }
+
+          // Force update visual states
+          updateButtonStates();
+          updateFilters();
+
+          return false;
+        }, true); // Use capture phase
+      });
+
+      // Program filter buttons (if they exist)
+      var programButtons = document.querySelectorAll('.program-filter');
+      programButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+          var programCode = this.getAttribute('data-program');
+
+          if (selectedPrograms.has(programCode)) {
+            selectedPrograms.delete(programCode);
+            this.classList.remove('active');
+          } else {
+            selectedPrograms.add(programCode);
+            this.classList.add('active');
+          }
+
+          updateFilters();
+        });
+      });
+
+      // Content type filter buttons
+      var contentTypeButtons = document.querySelectorAll('.content-type-filter');
+      contentTypeButtons.forEach(function(button) {
+        button.addEventListener('click', function() {
+          var contentType = this.getAttribute('data-content-type');
+
+          if (selectedContentTypes.has(contentType)) {
+            selectedContentTypes.delete(contentType);
+            this.classList.remove('active');
+          } else {
+            selectedContentTypes.add(contentType);
+            this.classList.add('active');
+          }
+
+          updateFilters();
+        });
+      });
+    }, 100); // Delay to let Quarto initialize first
+  })();
+</script>
 ```

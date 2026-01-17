@@ -1,0 +1,11 @@
+---
+title: "Tools — Environment"
+format: html
+---
+
+This file centralises the small header shown at the start of notebooks. The specific kernel
+snippet is automatically injected at render time based on the frontmatter `jupyter:` value
+by the `_quarto-utils/_include-tools.lua` filter.
+
+The snippets are located in `_quarto-utils/snippets/<kernel>.qmd` and contain `when-profile`
+blocks so they render correctly for `notes` and `slides`.

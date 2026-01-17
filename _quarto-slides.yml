@@ -1,17 +1,17 @@
 project:
-  output-dir: _output/_slides
   render:
     - "*_L_*.qmd" # rend tous les fichiers de type Lecture
     - "*_L_*.ipynb" # rend tous les fichiers de type Lecture
     - "!HIDDEN" # ignore les fichiers marqués HIDDEN
+  post-render: _quarto-utils/move-slides.sh
 
 format:
   clean-revealjs:
 
     # Presentation settings
-    # theme: [clean, _quarto-utils/custom.scss]
-
-    theme: [_quarto-utils/custom.scss]
+    theme: [white]
+    css:
+      - _quarto-utils/reveal-custom.css
     highlight-style: github
     footer: "E. Bruno - {{< meta title >}}"
     slide-level: 3
@@ -36,13 +36,13 @@ format:
     controls-layout: bottom-right
 
     # Plugins
-    chalkboard: 
+    chalkboard:
       enabled: true
       buttons: true
-    
+
     # PDF Export
     pdf-separate-fragments: true
-    
+
     # Performance
     # embed-resources: true
     smaller: true
