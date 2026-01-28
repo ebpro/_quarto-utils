@@ -2,7 +2,7 @@ project:
   render:
     - "*_L_*.qmd" # rend tous les fichiers de type Lecture
     - "*_L_*.ipynb" # rend tous les fichiers de type Lecture
-    - "!HIDDEN" # ignore les fichiers marqués HIDDEN
+    - "!**/STAGING/**" # ignore tous les dossiers nommés STAGING
   post-render: _quarto-utils/move-slides.sh
 
 format:
@@ -46,6 +46,10 @@ format:
     # Performance
     # embed-resources: true
     smaller: true
+
+    includes:
+      after-body:
+        - _quarto-utils/mermaid-reveal-fix.html
 
 revealjs-plugins:
   - verticator

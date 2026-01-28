@@ -62,7 +62,7 @@ function Pandoc(doc)
         tools_sh = proj_tools
       else
         -- final fallback: absolute path inside workspace
-        tools_sh = '/home/jovyan/work/_quarto-utils/tools-common.sh'
+        tools_sh = '/home/jovyan/work/course/_quarto-utils/tools-common.sh'
       end
     end
 

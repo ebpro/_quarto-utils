@@ -70,7 +70,8 @@ detect_env() {
   if [[ -f "/.dockerenv" ]] || grep -qaE "docker|kubepods|containerd" /proc/1/cgroup 2>/dev/null; then
     in_container="yes"
   fi
-  echo "| 🖥️ Env | \`$os\` / \`$arch\` / Container: $in_container |"
+  # echo "| 🖥️ Env | \`$os\` / \`$arch\` / Container: $in_container |"
+  echo "| 🖥️ Env | \`$os\` / \`$arch\` |"
 }
 
 # ==================== Display Functions ====================

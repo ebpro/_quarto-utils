@@ -32,15 +32,18 @@ execute:
 
 
 filters:
-  - quarto
+#  - quarto
   - _quarto-utils/_include-tools.lua
-  - include-code-files
+#  - include-code-files
   - line-highlight
   - lua-env
   - add-code-files
   - code-fullscreen
   - roughnotation
   - code-visibility
+  - include-code-files
+  - language-name
+# - hide-comment
 
 extensions:
     - _extensions/kazuyanagimoto/clean
@@ -49,6 +52,3 @@ extensions:
 project:
   resources:
     - _quarto-utils/MyMedia/**
-
-format:
-  html: {}
