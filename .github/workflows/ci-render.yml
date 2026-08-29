@@ -1,0 +1,17 @@
+name: Render Quarto (calls shared workflow)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  call-shared-render:
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@main
+    with:
+      profiles: 'notes,slides'
+      quarto-image: 'quarto/quarto:latest'
+      utils-repo: 'ebpro/_quarto-utils'
+      utils-ref: 'main'
+      output-path: '_output'

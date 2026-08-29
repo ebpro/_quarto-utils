@@ -1,0 +1,148 @@
+name: Render Quarto Documents (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      profiles:
+        description: 'Comma-separated list of profiles to render (e.g. notes,slides)'
+        required: false
+        type: string
+        default: 'notes,slides'
+      quarto-image:
+        description: 'Docker image to use for Quarto (must include `quarto` CLI)'
+        required: false
+        type: string
+        default: 'quarto/quarto:latest'
+      utils-repo:
+        description: 'Repository that provides shared Quarto utils (owner/repo)'
+        required: false
+        type: string
+        default: 'ebpro/_quarto-utils'
+      utils-ref:
+        description: 'Ref (branch or tag) of the utils repo to checkout'
+        required: false
+        type: string
+        default: 'main'
+      output-path:
+        description: 'Path to output artifacts (glob-friendly)'
+        required: false
+        type: string
+        default: '_output'
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.package.outputs.artifact }}
+    steps:
+      - name: Checkout repository (caller)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Checkout utilities repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.utils-repo }}
+          ref: ${{ inputs.utils-ref }}
+          path: _quarto-utils
+
+      - name: Ensure submodules (if used by caller)
+        run: git submodule update --init --recursive || true
+
+      - name: Make link script executable
+        run: chmod +x _quarto-utils/.devcontainer/scripts/link-quarto-utils.sh _quarto-utils/.devcontainer/scripts/update-quarto-utils.sh || true
+
+      - name: Run link script to prepare project (idempotent)
+        run: bash _quarto-utils/.devcontainer/scripts/link-quarto-utils.sh || true
+
+      - name: Render with Quarto (Docker)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Use a Quarto Docker image to avoid installing Quarto on the runner.
+          # Mount the full workspace and run the requested profiles.
+          IFS=',' read -ra PROFILES <<< "${{ inputs.profiles }}"
+          for p in "${PROFILES[@]}"; do
+            echo "Rendering profile: $p"
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE":/workdir \
+              -w /workdir \
+              ${{ inputs.quarto-image }} \
+              quarto render --profile "$p"
+          done
+
+      - name: Package rendered output
+        id: package
+        run: |
+          set -euo pipefail
+          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          REPO_NAME=$(basename "$GITHUB_REPOSITORY")
+          SHORT_SHA=${GITHUB_SHA:0:7}
+          BASE_OUTPUT="${{ inputs.output-path }}"
+          echo "Creating combined and per-profile artifacts from ${BASE_OUTPUT}"
+
+          # Combined zip (legacy)
+          COMBINED_ZIP="${REPO_NAME}-${SHORT_SHA}-${TIMESTAMP}.zip"
+          if [ -d "${BASE_OUTPUT}" ]; then
+            zip -r "${COMBINED_ZIP}" "${BASE_OUTPUT}"
+          else
+            echo "Warning: output path '${BASE_OUTPUT}' not found; creating empty artifact file"
+            zip "${COMBINED_ZIP}" --filesync --recurse-paths --junk-paths || true
+          fi
+          echo "artifact=${COMBINED_ZIP}" >> $GITHUB_OUTPUT
+
+          # Per-profile zips (one per profile string passed in)
+          IFS=',' read -ra PROFILES <<< "${{ inputs.profiles }}"
+          for p in "${PROFILES[@]}"; do
+            PROFILE_ZIP="${REPO_NAME}-${SHORT_SHA}-${p}-${TIMESTAMP}.zip"
+            echo "Creating profile zip: ${PROFILE_ZIP} (profile: $p)"
+            if [ -d "${BASE_OUTPUT}" ]; then
+              # include whole output for self-contained artifact; may be filtered later
+              zip -r "${PROFILE_ZIP}" "${BASE_OUTPUT}"
+            else
+              zip "${PROFILE_ZIP}" --filesync --recurse-paths --junk-paths || true
+            fi
+          done
+
+      - name: Upload rendered artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact }}
+          path: ${{ steps.package.outputs.artifact }}
+
+      - name: Upload site zip (fixed name)
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-zip
+          path: ${{ steps.package.outputs.artifact }}
+
+      - name: Upload PDFs (all found in output)
+        uses: actions/upload-artifact@v4
+        with:
+          name: quarto-pdfs
+          path: ${{ inputs.output-path }}/**/*.pdf
+
+      - name: Upload HTML files (all found in output)
+        uses: actions/upload-artifact@v4
+        with:
+          name: quarto-html
+          path: ${{ inputs.output-path }}/**/*.html
+
+      - name: Install Node uploader dependencies
+        run: |
+          set -euo pipefail
+          echo "Installing Node uploader dependencies (prefer lockfile)"
+          if [ -f _quarto-utils/package-lock.json ]; then
+            npm ci --prefer-offline --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Upload individual files as separate artifacts
+        env:
+          OUTPUT_PATH: ${{ inputs.output-path }}
+        run: |
+          set -euo pipefail
+          echo "Running uploader script"
+          node _quarto-utils/.github/scripts/upload_individual.js

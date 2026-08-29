@@ -1,0 +1,27 @@
+---
+# Tools — Bash environment
+---
+
+::: {.content-visible when-profile="notes"}
+### Kernel — capacités techniques (Bash)
+
+Ce snippet décrit les capacités du kernel `bash` pour exécuter des cellules de type shell. Il n'implique pas que des outils spécifiques (Java, Maven, Docker, etc.) soient installés sur le système : il indique uniquement quel type de cellule le kernel sait interpréter.
+
+Pour obtenir des informations réelles sur les outils disponibles, spécifiez la clé `tools:` dans le frontmatter de la page, par exemple :
+
+```yaml
+---
+jupyter: bash
+tools: [docker, git]
+---
+```
+
+Le filtre Lua générera alors un bloc qui exécutera la détection (`tools-common.sh`) et affichera un tableau de versions.
+
+:::
+
+::: {.content-visible when-profile="slides"}
+### Kernel — capacités (Bash)
+
+- **Kernel**: `bash` — exécute des cellules shell et commandes système
+:::

@@ -1,0 +1,22 @@
+// Design tokens for gallery
+$card-radius: 8px !default;
+$card-gap: 1.5rem !default;
+$card-padding: 1rem !default;
+$card-figure-height: 160px !default;
+$action-size: 36px !default;
+$focus-ring: rgba(3, 102, 214, 0.14) !default;
+$card-shadow: 0 10px 24px rgba(16, 24, 40, 0.06) !default;
+$muted-bg: #f6f8fa !default;
+$placeholder-gradient: linear-gradient(90deg, rgba(0, 0, 0, 0.04) 25%, rgba(0, 0, 0, 0.02) 50%, rgba(0, 0, 0, 0.04) 75%) !default;
+
+// Thumbnail / gallery tokens
+$thumb-border-width: 1px !default;
+$thumb-border-radius: 10px !default;
+$thumb-border-color-light: rgba(255, 255, 255, 0.9) !default;
+$thumb-border-color-dark: rgba(0, 0, 0, 0.12) !default;
+$thumb-inset-border: rgba(0, 0, 0, 0.06) !default;
+$thumb-overlay-bottom: linear-gradient(180deg, rgba(0, 0, 0, 0.0) 0%, rgba(0, 0, 0, 0.36) 60%) !default;
+$figure-cta-bg-light: rgba(255, 255, 255, 0.9) !default;
+$figure-cta-color-light: #0b1220 !default;
+$figure-cta-bg-dark: rgba(0, 0, 0, 0.55) !default;
+$figure-cta-color-dark: #ffffff !default;

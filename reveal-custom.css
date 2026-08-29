@@ -1,0 +1,77 @@
+/* Reveal slides custom CSS
+   Imports the shared output highlight styles and adds slide-specific tweaks */
+@import "output-highlight.css";
+
+/* On slides, make outputs slightly more compact and full-width within the slide column */
+.reveal .cell-output,
+.reveal .slide .cell-output {
+    margin: 0.4rem 0;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+}
+
+/* Ensure pre/code blocks inside outputs don't overflow the slide viewport */
+.reveal .cell-output pre {
+    max-width: 100%;
+    overflow: auto;
+}
+
+/* Slightly reduce the label size on slides */
+.reveal .cell-output::before {
+    font-size: 0.7rem;
+    margin-bottom: 0.25rem;
+}
+
+/* Tools block styling: compact, accessible table for tool versions */
+.tools-block {
+    margin: 0.6rem 0 0.8rem 0;
+    font-size: 0.95rem;
+}
+.tools-block table {
+    border-collapse: collapse;
+    width: auto;
+    max-width: 100%;
+    background: var(--quarto-card-bg, #fff);
+}
+.tools-block th,
+.tools-block td {
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--quarto-border-color, #e6e6e6);
+    text-align: left;
+}
+.tools-block th {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+.tools-block td.version {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Roboto Mono', 'Courier New', monospace;
+    color: var(--quarto-code-color, #2d2d2d);
+}
+
+/* Compact inline summary for slides */
+.tools-compact {
+    font-size: 0.9rem;
+    margin: 0.3rem 0 0.6rem 0;
+}
+.tools-compact strong {
+    color: var(--quarto-accent, #0b5);
+}
+
+/* Chip-like inline styling for compact tools list */
+.tools-block p, .tools-block > * {
+    margin: 0.2rem 0;
+}
+.tools-block .chip {
+    display: inline-block;
+    margin-right: 0.45rem;
+    margin-bottom: 0.25rem;
+    padding: 0.18rem 0.45rem;
+    border-radius: 999px;
+    background: var(--quarto-chip-bg, #f3f4f6);
+    border: 1px solid var(--quarto-border-color, #e6e6e6);
+    font-size: 0.85rem;
+}
+.tools-block .chip code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Roboto Mono', 'Courier New', monospace;
+    font-size: 0.82rem;
+}

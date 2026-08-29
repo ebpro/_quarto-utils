@@ -1,0 +1,12 @@
+/.quarto/
+**/*.quarto_ipynb
+**/*.bak
+**/*.log
+
+# Build artifacts
+*.html
+*.pdf
+*.tex
+
+# Project-specific (parent repo only)
+/README_files/

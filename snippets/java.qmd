@@ -1,0 +1,5 @@
+tools: [java, maven, gradle]
+---
+<!-- Snippet intentionally left empty.
+	The Lua filter now injects tools output only when `tools:` is present in frontmatter.
+	Remove this file only if you are sure no content relies on it elsewhere. -->
