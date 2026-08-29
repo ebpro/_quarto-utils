@@ -10,7 +10,7 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
     REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "No remote")
     LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "No tags")
     LAST_COMMIT_DATE=$(git log -1 --format="%cd" --date=format:"%Y-%m-%d %H:%M:%S")
-    HTTPS_URL=$(echo $REMOTE_URL | sed -e 's/git@github.com:/https:\/\/github.com\//' -e 's/\.git$//')
+    HTTPS_URL=$(echo "$REMOTE_URL" | sed -e 's/git@github.com:/https:\/\/github.com\//' -e 's/\.git$//')
     
     # Get additional details
     #UNCOMMITTED=$(git status --porcelain | wc -l)

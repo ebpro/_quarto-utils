@@ -71,8 +71,18 @@ function Pandoc(doc)
       tools_list = tools_list .. ' env'
     end
 
+    -- Frontmatter is untrusted input: validate before building a shell command
+    if not kernel:match('^[%w%-]+$') then
+      pandoc.utils.warn('tools filter: invalid kernel value, skipping tools block')
+      return doc
+    end
+    if not tools_sh:match('^[%w%.%_/-]+$') or not tools_list:match('^[%w%-]+( [%w%-]+)*$') then
+      pandoc.utils.warn('tools filter: invalid tools list, skipping tools block')
+      return doc
+    end
+
     -- Run the tools-common.sh script to produce a markdown table of tools
-    local cmd = string.format('bash %s %s "%s"', tools_sh, kernel, tools_list)
+    local cmd = string.format('bash "%s" "%s" "%s"', tools_sh, kernel, tools_list)
     local fh = io.popen(cmd)
     local result = nil
     if fh then

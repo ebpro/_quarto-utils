@@ -97,12 +97,12 @@ function Meta(meta)
       meta['image-alt'] = pandoc.MetaString(image:gsub('%-',' '))
     end
     -- diagnostic log
-    local logpath = WORKSPACE_ROOT .. '/.image-resolver.log'
+    local logpath = '/tmp/.quarto-image-resolver.log'
     local lf = io.open(logpath,'a')
     if lf then lf:write('RESOLVED: '..image..' -> '..resolved.."\n") lf:close() end
   end
   if not resolved then
-    local logpath = WORKSPACE_ROOT .. '/.image-resolver.log'
+    local logpath = '/tmp/.quarto-image-resolver.log'
     local lf = io.open(logpath,'a')
     if lf then lf:write('UNRESOLVED: '..image.."\n") lf:close() end
   end

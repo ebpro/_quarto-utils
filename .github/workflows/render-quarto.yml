@@ -32,6 +32,8 @@ on:
 jobs:
   render:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       artifact-name: ${{ steps.package.outputs.artifact }}
     steps:
@@ -59,27 +61,32 @@ jobs:
       - name: Render with Quarto (Docker)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROFILES: ${{ inputs.profiles }}
+          QUARTO_IMAGE: ${{ inputs.quarto-image }}
         run: |
           # Use a Quarto Docker image to avoid installing Quarto on the runner.
           # Mount the full workspace and run the requested profiles.
-          IFS=',' read -ra PROFILES <<< "${{ inputs.profiles }}"
-          for p in "${PROFILES[@]}"; do
+          IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
+          for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
             docker run --rm \
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
-              ${{ inputs.quarto-image }} \
+              "$QUARTO_IMAGE" \
               quarto render --profile "$p"
           done
 
       - name: Package rendered output
         id: package
+        env:
+          PROFILES: ${{ inputs.profiles }}
+          OUTPUT_PATH: ${{ inputs.output-path }}
         run: |
           set -euo pipefail
           TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
           REPO_NAME=$(basename "$GITHUB_REPOSITORY")
           SHORT_SHA=${GITHUB_SHA:0:7}
-          BASE_OUTPUT="${{ inputs.output-path }}"
+          BASE_OUTPUT="$OUTPUT_PATH"
           echo "Creating combined and per-profile artifacts from ${BASE_OUTPUT}"
 
           # Combined zip (legacy)
@@ -93,8 +100,8 @@ jobs:
           echo "artifact=${COMBINED_ZIP}" >> $GITHUB_OUTPUT
 
           # Per-profile zips (one per profile string passed in)
-          IFS=',' read -ra PROFILES <<< "${{ inputs.profiles }}"
-          for p in "${PROFILES[@]}"; do
+          IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
+          for p in "${PROFILE_LIST[@]}"; do
             PROFILE_ZIP="${REPO_NAME}-${SHORT_SHA}-${p}-${TIMESTAMP}.zip"
             echo "Creating profile zip: ${PROFILE_ZIP} (profile: $p)"
             if [ -d "${BASE_OUTPUT}" ]; then
