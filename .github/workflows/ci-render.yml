@@ -1,17 +1,18 @@
+# TEMPLATE for consuming repos (lectures/samples).
+# Copy this file to <your-repo>/.github/workflows/ci-render.yml and add your
+# push/pull_request triggers there. Kept dispatch-only here so the utils repo
+# itself does not run a render on every push (it has no Quarto project).
 name: Render Quarto (calls shared workflow)
 
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main, develop ]
+  workflow_dispatch:
 
 jobs:
   call-shared-render:
-    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.0.0
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.0.1
     with:
       profiles: 'notes,slides'
-      quarto-image: 'quarto/quarto:latest'
+      quarto-image: 'ghcr.io/quarto-dev/quarto:latest'
       utils-repo: 'ebpro/_quarto-utils'
-      utils-ref: 'v1.0.0'
+      utils-ref: 'v1.0.1'
       output-path: '_output'

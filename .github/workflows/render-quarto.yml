@@ -12,7 +12,7 @@ on:
         description: 'Docker image to use for Quarto (must include `quarto` CLI)'
         required: false
         type: string
-        default: 'quarto/quarto:latest'
+        default: 'ghcr.io/quarto-dev/quarto:latest'
       utils-repo:
         description: 'Repository that provides shared Quarto utils (owner/repo)'
         required: false
@@ -51,12 +51,6 @@ jobs:
 
       - name: Ensure submodules (if used by caller)
         run: git submodule update --init --recursive || true
-
-      - name: Make link script executable
-        run: chmod +x _quarto-utils/.devcontainer/scripts/link-quarto-utils.sh _quarto-utils/.devcontainer/scripts/update-quarto-utils.sh || true
-
-      - name: Run link script to prepare project (idempotent)
-        run: bash _quarto-utils/.devcontainer/scripts/link-quarto-utils.sh || true
 
       - name: Render with Quarto (Docker)
         env:
@@ -139,8 +133,9 @@ jobs:
       - name: Install Node uploader dependencies
         run: |
           set -euo pipefail
+          cd _quarto-utils
           echo "Installing Node uploader dependencies (prefer lockfile)"
-          if [ -f _quarto-utils/package-lock.json ]; then
+          if [ -f package-lock.json ]; then
             npm ci --prefer-offline --no-audit --no-fund
           else
             npm install --no-audit --no-fund

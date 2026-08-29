@@ -1,0 +1,13 @@
+{
+  "name": "_quarto-utils-scripts",
+  "version": "1.0.1",
+  "private": true,
+  "description": "Dependencies for .github/scripts (CI artifact uploader)",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@actions/artifact": "^2.1.2",
+    "glob": "^10.4.5"
+  }
+}
