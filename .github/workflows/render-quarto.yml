@@ -28,6 +28,10 @@ on:
         required: false
         type: string
         default: '_output'
+    secrets:
+      EBPRO_CI_PAT:
+        description: 'Read-only PAT for cross-repo fetches of private repos (utils/submodules); falls back to GITHUB_TOKEN when omitted'
+        required: false
 
 jobs:
   render:
@@ -48,9 +52,19 @@ jobs:
           repository: ${{ inputs.utils-repo }}
           ref: ${{ inputs.utils-ref }}
           path: _quarto-utils
+          token: ${{ secrets.EBPRO_CI_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Ensure submodules (if used by caller)
-        run: git submodule update --init --recursive || true
+        env:
+          CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
+        run: |
+          # GITHUB_TOKEN is scoped to the caller repo; route submodule fetches (SSH or HTTPS) through the read PAT when provided.
+          if [ -n "$CI_PAT" ]; then
+            git config --global url."https://x-access-token:${CI_PAT}@github.com/".insteadOf "git@github.com:"
+            git config --global url."https://x-access-token:${CI_PAT}@github.com/".insteadOf "ssh://git@github.com/"
+            git config --global url."https://x-access-token:${CI_PAT}@github.com/".insteadOf "https://github.com/"
+          fi
+          git submodule update --init --recursive || true
 
       - name: Render with Quarto (Docker)
         env:
