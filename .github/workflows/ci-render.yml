@@ -9,12 +9,12 @@ on:
 
 jobs:
   call-shared-render:
-    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.0.2
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.0.3
     with:
       profiles: 'notes,slides'
-      quarto-image: 'ghcr.io/quarto-dev/quarto:latest'
+      quarto-image: 'ghcr.io/ebpro/solen:quarto-full-chore-add-pyproject'
       utils-repo: 'ebpro/_quarto-utils'
-      utils-ref: 'v1.0.2'
+      utils-ref: 'v1.0.3'
       output-path: '_output'
     secrets:
       EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}

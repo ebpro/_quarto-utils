@@ -12,7 +12,7 @@ on:
         description: 'Docker image to use for Quarto (must include `quarto` CLI)'
         required: false
         type: string
-        default: 'ghcr.io/quarto-dev/quarto:latest'
+        default: 'ghcr.io/ebpro/solen:quarto-full-chore-add-pyproject'
       utils-repo:
         description: 'Repository that provides shared Quarto utils (owner/repo)'
         required: false
@@ -72,8 +72,10 @@ jobs:
           PROFILES: ${{ inputs.profiles }}
           QUARTO_IMAGE: ${{ inputs.quarto-image }}
         run: |
-          # Use a Quarto Docker image to avoid installing Quarto on the runner.
-          # Mount the full workspace and run the requested profiles.
+          # Render inside the provided Docker image (default: Solen lecture image, which
+          # bundles Quarto plus bash/zsh/python3/Java Jupyter kernels). Mount the full
+          # workspace and run the requested profiles. Login shell + sdkman-init so
+          # language tools installed via sdkman (e.g. java for IJava) are on PATH.
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
@@ -81,7 +83,7 @@ jobs:
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "$QUARTO_IMAGE" \
-              quarto render --profile "$p"
+              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
           done
 
       - name: Package rendered output
