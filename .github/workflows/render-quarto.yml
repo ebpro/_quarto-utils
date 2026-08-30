@@ -71,7 +71,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
           QUARTO_IMAGE: ${{ inputs.quarto-image }}
+          EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
         run: |
+          # Private GHCR images (e.g. ghcr.io/ebpro/solen) are not pullable anonymously:
+          # authenticate with the org PAT (has read access to the package); docker login
+          # exchanges it for a short-lived pull token.
+          if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "$EBPRO_CI_PAT" ]; then
+            echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          fi
           # Render inside the provided Docker image (default: Solen lecture image, which
           # bundles Quarto plus bash/zsh/python3/Java Jupyter kernels). Mount the full
           # workspace and run the requested profiles. Login shell + sdkman-init so
