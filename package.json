@@ -1,13 +1,10 @@
 {
-  "name": "_quarto-utils-scripts",
-  "version": "1.0.1",
+  "name": "ebpro-quarto-utils-ci",
+  "version": "1.0.0",
   "private": true,
-  "description": "Dependencies for .github/scripts (CI artifact uploader)",
-  "engines": {
-    "node": ">=20"
-  },
+  "description": "Pinned dependencies for .github/scripts (render artifact uploader)",
   "dependencies": {
-    "@actions/artifact": "^2.1.2",
-    "glob": "^10.4.5"
+    "@actions/artifact": "1.1.3",
+    "glob": "11.1.0"
   }
 }
