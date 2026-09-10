@@ -46,14 +46,6 @@ jobs:
         with:
           submodules: false
 
-      - name: Checkout utilities repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.utils-repo }}
-          ref: ${{ inputs.utils-ref }}
-          path: _quarto-utils
-          token: ${{ secrets.EBPRO_CI_PAT || secrets.GITHUB_TOKEN }}
-
       - name: Ensure submodules (if used by caller)
         env:
           CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
@@ -65,6 +57,14 @@ jobs:
             git config --global url."https://x-access-token:${CI_PAT}@github.com/".insteadOf "https://github.com/"
           fi
           git submodule update --init --recursive || true
+
+      - name: Checkout utilities repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.utils-repo }}
+          ref: ${{ inputs.utils-ref }}
+          path: _quarto-utils
+          token: ${{ secrets.EBPRO_CI_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Render with Quarto (Docker)
         env:
