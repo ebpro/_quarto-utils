@@ -3,6 +3,15 @@
 -- and prepends its parsed blocks to the document.
 -- If `tools` is specified in frontmatter, it creates a custom tools display.
 
+-- Version-safe warn: pandoc.utils.warn is Pandoc 3.x only; fall back to stderr
+local function safe_warn(msg)
+  if type(pandoc.utils) == 'table' and type(pandoc.utils.warn) == 'function' then
+    pandoc.utils.warn(msg)
+  else
+    io.stderr:write(msg .. '\n')
+  end
+end
+
 function Pandoc(doc)
   local meta = doc.meta or {}
   local kernel = nil
@@ -73,11 +82,11 @@ function Pandoc(doc)
 
     -- Frontmatter is untrusted input: validate before building a shell command
     if not kernel:match('^[%w%-]+$') then
-      pandoc.utils.warn('tools filter: invalid kernel value, skipping tools block')
+      safe_warn('tools filter: invalid kernel value, skipping tools block')
       return doc
     end
     if not tools_sh:match('^[%w%.%_/-]+$') or not tools_list:match('^[%w%-]+( [%w%-]+)*$') then
-      pandoc.utils.warn('tools filter: invalid tools list, skipping tools block')
+      safe_warn('tools filter: invalid tools list, skipping tools block')
       return doc
     end
 
