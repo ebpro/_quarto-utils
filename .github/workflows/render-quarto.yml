@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: '_output'
+      deploy:
+        description: 'Deploy rendered site to GitHub Pages (push events only)'
+        required: false
+        type: boolean
+        default: true
     secrets:
       EBPRO_CI_PAT:
         description: 'Read-only PAT for cross-repo fetches of private repos (utils/submodules); falls back to GITHUB_TOKEN when omitted'
@@ -39,8 +44,6 @@ jobs:
     permissions:
       contents: read
       actions: write
-    outputs:
-      artifact-name: ${{ steps.package.outputs.artifact }}
     steps:
       - name: Checkout repository (caller)
         uses: actions/checkout@v4
@@ -96,81 +99,48 @@ jobs:
 
       - name: Package rendered output
         id: package
-        env:
-          PROFILES: ${{ inputs.profiles }}
-          OUTPUT_PATH: ${{ inputs.output-path }}
         run: |
-          set -euo pipefail
-          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
-          REPO_NAME=$(basename "$GITHUB_REPOSITORY")
-          SHORT_SHA=${GITHUB_SHA:0:7}
-          BASE_OUTPUT="$OUTPUT_PATH"
-          echo "Creating combined and per-profile artifacts from ${BASE_OUTPUT}"
+          cd "${{ github.workspace }}/_output"
+          zip -r "${{ github.workspace }}/site-zip.zip" .
+          echo "site-name=site-zip" >> "$GITHUB_OUTPUT"
+          echo "Packaged site-zip.zip ($(du -sh "${{ github.workspace }}/site-zip.zip" | cut -f1))"
 
-          # Combined zip (legacy)
-          COMBINED_ZIP="${REPO_NAME}-${SHORT_SHA}-${TIMESTAMP}.zip"
-          if [ -d "${BASE_OUTPUT}" ]; then
-            zip -r "${COMBINED_ZIP}" "${BASE_OUTPUT}"
-          else
-            echo "Warning: output path '${BASE_OUTPUT}' not found; creating empty artifact file"
-            zip "${COMBINED_ZIP}" --filesync --recurse-paths --junk-paths || true
-          fi
-          echo "artifact=${COMBINED_ZIP}" >> $GITHUB_OUTPUT
-
-          # Per-profile zips (one per profile string passed in)
-          IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
-          for p in "${PROFILE_LIST[@]}"; do
-            PROFILE_ZIP="${REPO_NAME}-${SHORT_SHA}-${p}-${TIMESTAMP}.zip"
-            echo "Creating profile zip: ${PROFILE_ZIP} (profile: $p)"
-            if [ -d "${BASE_OUTPUT}" ]; then
-              # include whole output for self-contained artifact; may be filtered later
-              zip -r "${PROFILE_ZIP}" "${BASE_OUTPUT}"
-            else
-              zip "${PROFILE_ZIP}" --filesync --recurse-paths --junk-paths || true
-            fi
-          done
-
-      - name: Upload rendered artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.package.outputs.artifact }}
-          path: ${{ steps.package.outputs.artifact }}
-
-      - name: Upload site zip (fixed name)
+      - name: Upload site artifact
         uses: actions/upload-artifact@v4
         with:
           name: site-zip
-          path: ${{ steps.package.outputs.artifact }}
+          path: site-zip.zip
+          retention-days: 7
 
-      - name: Upload PDFs (all found in output)
-        uses: actions/upload-artifact@v4
+  deploy:
+    needs: render
+    if: inputs.deploy && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
         with:
-          name: quarto-pdfs
-          path: ${{ inputs.output-path }}/**/*.pdf
+          name: site-zip
+          path: site-zip
 
-      - name: Upload HTML files (all found in output)
-        uses: actions/upload-artifact@v4
+      - name: Unpack site
+        run: |
+          mkdir -p site
+          cd site-zip
+          unzip -o site-zip.zip -d ../site
+          echo "Site ready: $(find ../site -type f | wc -l) files"
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: quarto-html
-          path: ${{ inputs.output-path }}/**/*.html
+          path: site
 
-      - name: Install Node uploader dependencies
-        run: |
-          set -euo pipefail
-          cd _quarto-utils
-          echo "Installing Node uploader dependencies (prefer lockfile)"
-          if [ -f package-lock.json ]; then
-            npm ci --prefer-offline --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
-
-      - name: Upload individual files as separate artifacts
-        env:
-          OUTPUT_PATH: ${{ inputs.output-path }}
-          ACTIONS_RUNTIME_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ACTIONS_RUNTIME_URL: ${{ github.server_url }}/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          echo "Running uploader script"
-          node _quarto-utils/.github/scripts/upload_individual.js
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
