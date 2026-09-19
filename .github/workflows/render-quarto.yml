@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: write
     outputs:
       artifact-name: ${{ steps.package.outputs.artifact }}
     steps:
@@ -167,6 +168,8 @@ jobs:
       - name: Upload individual files as separate artifacts
         env:
           OUTPUT_PATH: ${{ inputs.output-path }}
+          ACTIONS_RUNTIME_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTIONS_RUNTIME_URL: ${{ github.server_url }}/${{ github.run_id }}
         run: |
           set -euo pipefail
           echo "Running uploader script"
