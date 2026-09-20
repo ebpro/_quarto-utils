@@ -91,7 +91,7 @@ jobs:
       - name: Package rendered output
         id: package
         run: |
-          cd "$OUTPUT_DIR"
+          cd "${{ github.workspace }}/_output"
           python3 -c "
           import zipfile, os
           zf = zipfile.ZipFile('${{ github.workspace }}/site-zip.zip', 'w', zipfile.ZIP_DEFLATED)
