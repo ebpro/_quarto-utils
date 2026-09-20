@@ -85,7 +85,7 @@ jobs:
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "$QUARTO_IMAGE" \
-              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
+              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto install chromium 2>/dev/null || true; quarto render --profile '$p'"
           done
 
       - name: Package rendered output
