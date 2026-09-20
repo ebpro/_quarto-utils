@@ -1,7 +1,7 @@
 listing:
   # Content organization
   contents:
-    - "*.qmd"
+    - "**/*.qmd"
     - "!index.qmd"
     - "!_*.qmd"
   sort:

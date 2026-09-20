@@ -41,22 +41,14 @@ jobs:
       contents: read
       actions: write
     steps:
-      - name: Checkout repository (caller)
+      - name: Checkout repository (caller) with submodules
         uses: actions/checkout@v4
         with:
-          submodules: false
+          submodules: recursive
+          token: ${{ secrets.EBPRO_CI_PAT || secrets.GITHUB_TOKEN }}
 
-      - name: Ensure submodules (if used by caller)
-        env:
-          CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
-        run: |
-          # GITHUB_TOKEN is scoped to the caller repo; route submodule fetches (SSH or HTTPS) through the read PAT when provided.
-          if [ -n "$CI_PAT" ]; then
-            git config --global url."https://x-access-token:${CI_PAT}@github.com/".insteadOf "git@github.com:"
-            git config --global url."https://x-access-token:${CI_PAT}@github.com/".insteadOf "ssh://git@github.com/"
-            git config --global url."https://x-access-token:${CI_PAT}@github.com/".insteadOf "https://github.com/"
-          fi
-          git submodule update --init --recursive || true
+      - name: Clear submodule-populated utils (re-checkout at desired ref)
+        run: rm -rf _quarto-utils
 
       - name: Checkout utilities repo
         uses: actions/checkout@v4
