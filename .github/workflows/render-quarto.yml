@@ -33,10 +33,6 @@ on:
         required: false
         type: boolean
         default: true
-    secrets:
-      EBPRO_CI_PAT:
-        description: 'Read-only PAT for cross-repo fetches of private repos (utils/submodules); falls back to GITHUB_TOKEN when omitted'
-        required: false
 
 jobs:
   render:
