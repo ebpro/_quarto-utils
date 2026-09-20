@@ -91,10 +91,18 @@ jobs:
       - name: Package rendered output
         id: package
         run: |
-          cd "${{ github.workspace }}/_output"
-          zip -r "${{ github.workspace }}/site-zip.zip" .
+          cd "$OUTPUT_DIR"
+          python3 -c "
+          import zipfile, os
+          zf = zipfile.ZipFile('${{ github.workspace }}/site-zip.zip', 'w', zipfile.ZIP_DEFLATED)
+          for root, dirs, files in os.walk('.'):
+              for f in files:
+                  p = os.path.join(root, f)
+                  zf.write(p)
+          zf.close()
+          print(f'Created zip: {os.path.getsize(\"${{ github.workspace }}/site-zip.zip\")} bytes')
+          "
           echo "site-name=site-zip" >> "$GITHUB_OUTPUT"
-          echo "Packaged site-zip.zip ($(du -sh "${{ github.workspace }}/site-zip.zip" | cut -f1))"
 
       - name: Upload site artifact
         uses: actions/upload-artifact@v4
