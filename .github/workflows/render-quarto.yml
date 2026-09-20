@@ -12,7 +12,7 @@ on:
         description: 'Docker image to use for Quarto (must include `quarto` CLI)'
         required: false
         type: string
-        default: 'ghcr.io/ebpro/solen:quarto-full-chore-add-pyproject'
+        default: 'harbor.ebruno.fr/ghcr-p2c/ebpro/solen:quarto-full-chore-add-pyproject'
       utils-repo:
         description: 'Repository that provides shared Quarto utils (owner/repo)'
         required: false
@@ -36,7 +36,7 @@ on:
 
 jobs:
   render:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: read
       actions: write
@@ -103,7 +103,7 @@ jobs:
   deploy:
     needs: render
     if: inputs.deploy && github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       pages: write
       id-token: write
