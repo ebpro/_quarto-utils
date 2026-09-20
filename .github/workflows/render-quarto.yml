@@ -58,6 +58,9 @@ jobs:
           path: _quarto-utils
           token: ${{ secrets.EBPRO_CI_PAT || secrets.GITHUB_TOKEN }}
 
+      - name: Create compatibility symlink
+        run: ln -s _quarto-utils quarto-utils
+
       - name: Render with Quarto (Docker)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
