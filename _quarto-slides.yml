@@ -1,8 +1,8 @@
 project:
   output-dir: _output/_slides
   render:
-    - "*_L_*.qmd" # rend tous les fichiers de type Lecture
-    - "*_L_*.ipynb" # rend tous les fichiers de type Lecture
+    - "**/*_L_*.qmd" # rend tous les fichiers de type Lecture (récursif)
+    - "**/*_L_*.ipynb" # rend tous les fichiers de type Lecture (récursif)
     - "!HIDDEN" # ignore les fichiers marqués HIDDEN
 
 format:

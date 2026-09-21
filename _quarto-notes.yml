@@ -1,10 +1,9 @@
 project:
   type: website
   output-dir: _output/
-  post-render: quarto render --profile slides
 
-  render: 
-    - "*.qmd"  # rend tous les fichiers .qmd par défaut
+  render:
+    - "**/*.qmd"  # rend tous les fichiers .qmd par défaut (récursif)
     - "!HIDDEN"  # ignore les fichiers marqués HIDDEN
 website:
   title: "Emmanuel BRUNO"
