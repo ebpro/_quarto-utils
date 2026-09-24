@@ -83,16 +83,20 @@ jobs:
           # default cannot reach the runner's dind daemon. When a dind socket is
           # present (self-hosted dind runners), bridge it in and grant the render
           # user (uid 1000) access to the socket's group; the gid is read at runtime
-          # so it stays correct if it drifts. On runners with no socket (e.g. hosted
-          # or non-dind self-hosted), this is skipped entirely — no behavior change.
+          # so it stays correct if it drifts. Also alias the name `dind` to the host
+          # gateway so published ports (e.g. `docker run -p 8080:80`) are reachable
+          # from the notebook as `http://dind:<port>`. On runners with no socket
+          # (e.g. hosted or non-dind self-hosted), this is skipped entirely — no
+          # behavior change.
           DOCKER_BRIDGE=()
           if [ -S /var/run/docker.sock ]; then
             DOCKER_BRIDGE+=(
               -v /var/run/docker.sock:/var/run/docker.sock
               -e DOCKER_HOST=unix:///var/run/docker.sock
               --group-add "$(stat -c '%g' /var/run/docker.sock)"
+              --add-host dind:host-gateway
             )
-            echo "dind socket detected — bridging /var/run/docker.sock into render container (gid=$(stat -c '%g' /var/run/docker.sock))"
+            echo "dind socket detected — bridging /var/run/docker.sock into render container (gid=$(stat -c '%g' /var/run/docker.sock)); aliasing dind -> host-gateway"
           else
             echo "no dind socket at /var/run/docker.sock — rendering without docker access"
           fi
