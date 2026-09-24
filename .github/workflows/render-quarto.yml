@@ -33,6 +33,11 @@ on:
         required: false
         type: boolean
         default: true
+      nested-dind:
+        description: 'Render in an isolated nested DinD daemon instead of mounting the caller Docker socket'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   render:
@@ -61,55 +66,154 @@ jobs:
       - name: Create compatibility symlink
         run: ln -s _quarto-utils quarto-utils
 
+      - name: Detect Docker socket
+        id: docker_detect
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            echo "socket=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "socket=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up isolated DinD
+        id: nested_dind
+        if: steps.docker_detect.outputs.socket == 'true' && inputs.nested-dind
+        env:
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          DIND_IMAGE=docker:28-dind
+          DIND_NETWORK="qk-dind-${RUN_ID}-${ATTEMPT}"
+          DIND_CONTAINER="qk-dind-${RUN_ID}-${ATTEMPT}-daemon"
+          CERT_DIR="${RUNNER_TEMP}/qk-dind-certs"
+
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "dind_network=$DIND_NETWORK" >> "$GITHUB_OUTPUT"
+          echo "dind_container=$DIND_CONTAINER" >> "$GITHUB_OUTPUT"
+          echo "dind_cert_dir=$CERT_DIR" >> "$GITHUB_OUTPUT"
+
+          rm -rf "$CERT_DIR"
+          mkdir -p "$CERT_DIR"
+
+          docker network create "$DIND_NETWORK"
+
+          DIND_RUN_ARGS=(
+            -d
+            --privileged
+            --cgroupns=host
+            --tmpfs /sys/fs/cgroup
+            --name "$DIND_CONTAINER"
+            --network "$DIND_NETWORK"
+            --network-alias dind
+            -e DOCKER_TLS_CERTDIR=/certs
+            -e DOCKER_TLS_SAN=DNS:dind
+          )
+
+          if [ -f "${HOME}/.docker/config.json" ]; then
+            DIND_RUN_ARGS+=(-v "${HOME}/.docker:/root/.docker:ro")
+          fi
+
+          docker pull "$DIND_IMAGE"
+          docker run "${DIND_RUN_ARGS[@]}" "$DIND_IMAGE"
+
+          ready=false
+          for _ in $(seq 1 60); do
+            if docker exec "$DIND_CONTAINER" docker info >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" != true ]; then
+            echo "Isolated DinD failed to become ready"
+            docker logs "$DIND_CONTAINER" || true
+            exit 1
+          fi
+
+          docker cp "$DIND_CONTAINER":/certs/client/. "$CERT_DIR/"
+          echo "Nested DinD ready: network=$DIND_NETWORK container=$DIND_CONTAINER certs=$CERT_DIR"
+
       - name: Render with Quarto (Docker)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
           QUARTO_IMAGE: ${{ inputs.quarto-image }}
           EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
+          NESTED_DIND_ENABLED: ${{ steps.nested_dind.outputs.enabled }}
+          NESTED_DIND_NETWORK: ${{ steps.nested_dind.outputs.dind_network }}
+          NESTED_DIND_CERT_DIR: ${{ steps.nested_dind.outputs.dind_cert_dir }}
         run: |
+          set -euo pipefail
+
           # Private GHCR images (e.g. ghcr.io/ebpro/solen) are not pullable anonymously:
           # authenticate with the org PAT (has read access to the package); docker login
           # exchanges it for a short-lived pull token.
           if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "$EBPRO_CI_PAT" ]; then
             echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           fi
-          # Render inside the provided Docker image (default: Solen lecture image, which
-          # bundles Quarto plus bash/zsh/python3/Java Jupyter kernels). Mount the full
-          # workspace and run the requested profiles. Login shell + sdkman-init so
-          # language tools installed via sdkman (e.g. java for IJava) are on PATH.
-          # Containers lectures run `docker` CLI commands inside rendered notebooks.
-          # The notebook code executes in this sibling render container, which by
-          # default cannot reach the runner's dind daemon. When a dind socket is
-          # present (self-hosted dind runners), bridge it in and grant the render
-          # user (uid 1000) access to the socket's group; the gid is read at runtime
-          # so it stays correct if it drifts. Also alias the name `dind` to the host
-          # gateway so published ports (e.g. `docker run -p 8080:80`) are reachable
-          # from the notebook as `http://dind:<port>`. On runners with no socket
-          # (e.g. hosted or non-dind self-hosted), this is skipped entirely — no
-          # behavior change.
-          DOCKER_BRIDGE=()
-          if [ -S /var/run/docker.sock ]; then
-            DOCKER_BRIDGE+=(
-              -v /var/run/docker.sock:/var/run/docker.sock
-              -e DOCKER_HOST=unix:///var/run/docker.sock
-              --group-add "$(stat -c '%g' /var/run/docker.sock)"
-              --add-host dind:host-gateway
-            )
-            echo "dind socket detected — bridging /var/run/docker.sock into render container (gid=$(stat -c '%g' /var/run/docker.sock)); aliasing dind -> host-gateway"
-          else
-            echo "no dind socket at /var/run/docker.sock — rendering without docker access"
-          fi
+
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
-            docker run --rm \
-              "${DOCKER_BRIDGE[@]}" \
-              -v "$GITHUB_WORKSPACE":/workdir \
-              -w /workdir \
+
+            DOCKER_RUN_ARGS=(
+              --rm
+              -v "$GITHUB_WORKSPACE":/workdir
+              -w /workdir
+            )
+
+            if [ "$NESTED_DIND_ENABLED" = "true" ]; then
+              # Nested DinD mode: the render container runs on the caller/runner daemon,
+              # but its `docker` CLI (and thus notebook docker commands) target the
+              # isolated nested DinD daemon over TLS at tcp://dind:2376. The caller
+              # /var/run/docker.sock is deliberately NOT mounted in this mode.
+              echo "Nested DinD mode enabled: render container will talk to tcp://dind:2376"
+              DOCKER_RUN_ARGS+=(
+                --network "$NESTED_DIND_NETWORK"
+                -v "$NESTED_DIND_CERT_DIR":/certs/client:ro
+                -e DOCKER_HOST=tcp://dind:2376
+                -e DOCKER_TLS_VERIFY=1
+                -e DOCKER_CERT_PATH=/certs/client
+              )
+            elif [ -S /var/run/docker.sock ]; then
+              # Legacy dind socket bridge: when a dind socket is present and nested mode
+              # is disabled, bridge /var/run/docker.sock into the render container and
+              # grant the render user (uid 1000) access to the socket's group; the gid
+              # is read at runtime so it stays correct if it drifts. Also alias the name
+              # `dind` to the host gateway so published ports (e.g. `docker run -p
+              # 8080:80`) are reachable from the notebook as `http://dind:<port>`.
+              echo "Docker socket bridge mode enabled"
+              DOCKER_RUN_ARGS+=(
+                -v /var/run/docker.sock:/var/run/docker.sock
+                -e DOCKER_HOST=unix:///var/run/docker.sock
+                --group-add "$(stat -c '%g' /var/run/docker.sock)"
+                --add-host dind:host-gateway
+              )
+            else
+              echo "No Docker socket found: rendering without Docker access"
+            fi
+
+            docker run "${DOCKER_RUN_ARGS[@]}" \
               "$QUARTO_IMAGE" \
               bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
           done
+
+      - name: Clean up isolated DinD
+        if: always() && steps.nested_dind.outputs.enabled == 'true'
+        env:
+          DIND_CONTAINER: ${{ steps.nested_dind.outputs.dind_container }}
+          DIND_NETWORK: ${{ steps.nested_dind.outputs.dind_network }}
+        run: |
+          if [ -n "${DIND_CONTAINER:-}" ]; then
+            docker rm -f "$DIND_CONTAINER" >/dev/null 2>&1 || true
+          fi
+          if [ -n "${DIND_NETWORK:-}" ]; then
+            docker network rm "$DIND_NETWORK" >/dev/null 2>&1 || true
+          fi
+          echo "Isolated DinD cleanup complete"
 
       - name: Package rendered output
         id: package
