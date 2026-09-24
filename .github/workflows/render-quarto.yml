@@ -78,10 +78,29 @@ jobs:
           # bundles Quarto plus bash/zsh/python3/Java Jupyter kernels). Mount the full
           # workspace and run the requested profiles. Login shell + sdkman-init so
           # language tools installed via sdkman (e.g. java for IJava) are on PATH.
+          # Containers lectures run `docker` CLI commands inside rendered notebooks.
+          # The notebook code executes in this sibling render container, which by
+          # default cannot reach the runner's dind daemon. When a dind socket is
+          # present (self-hosted dind runners), bridge it in and grant the render
+          # user (uid 1000) access to the socket's group; the gid is read at runtime
+          # so it stays correct if it drifts. On runners with no socket (e.g. hosted
+          # or non-dind self-hosted), this is skipped entirely — no behavior change.
+          DOCKER_BRIDGE=()
+          if [ -S /var/run/docker.sock ]; then
+            DOCKER_BRIDGE+=(
+              -v /var/run/docker.sock:/var/run/docker.sock
+              -e DOCKER_HOST=unix:///var/run/docker.sock
+              --group-add "$(stat -c '%g' /var/run/docker.sock)"
+            )
+            echo "dind socket detected — bridging /var/run/docker.sock into render container (gid=$(stat -c '%g' /var/run/docker.sock))"
+          else
+            echo "no dind socket at /var/run/docker.sock — rendering without docker access"
+          fi
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
             docker run --rm \
+              "${DOCKER_BRIDGE[@]}" \
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "$QUARTO_IMAGE" \
