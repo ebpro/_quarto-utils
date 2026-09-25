@@ -38,6 +38,16 @@ on:
         required: false
         type: boolean
         default: false
+      harbor-registry:
+        description: 'Optional Harbor registry host override (e.g. harbor.ebruno.fr). Resolution order: this input -> vars.HARBOR_REGISTRY -> runner env HARBOR_REGISTRY -> the harbor.ebruno.fr host if the quarto image is already on Harbor. Used only to route Docker Hub images through the Harbor proxy cache; empty = auto-detect.'
+        required: false
+        type: string
+        default: ''
+      dockerhub-proxy-project:
+        description: 'Optional Harbor Docker Hub proxy project override (e.g. proxy-docker-hub). Resolution order: this input -> vars.HARBOR_DOCKERHUB_PROXY -> runner env HARBOR_DOCKERHUB_PROXY. No default: the proxy cache is used only when a project resolves, so runners without Harbor configuration keep pulling images directly.'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   render:
@@ -75,16 +85,148 @@ jobs:
             echo "socket=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve proxy/cache configuration
+        id: proxy
+        env:
+          INPUT_HARBOR_REGISTRY: ${{ inputs.harbor-registry }}
+          VAR_HARBOR_REGISTRY: ${{ vars.HARBOR_REGISTRY }}
+          INPUT_PROXY_PROJECT: ${{ inputs.dockerhub-proxy-project }}
+          VAR_PROXY_PROJECT: ${{ vars.HARBOR_DOCKERHUB_PROXY }}
+          QUARTO_IMAGE: ${{ inputs.quarto-image }}
+        run: |
+          set -euo pipefail
+
+          # --- Effective Harbor registry host ---
+          # Resolution order: input -> org var -> runner env -> derive from the
+          # quarto image when it is already hosted on Harbor. Normalized by
+          # stripping any scheme and the trailing slash.
+          REGISTRY="${INPUT_HARBOR_REGISTRY:-${VAR_HARBOR_REGISTRY:-${HARBOR_REGISTRY:-}}}"
+          if [ -z "$REGISTRY" ]; then
+            case "$QUARTO_IMAGE" in
+              harbor.ebruno.fr/*) REGISTRY="harbor.ebruno.fr" ;;
+            esac
+          fi
+          REGISTRY="${REGISTRY#http://}"
+          REGISTRY="${REGISTRY#https://}"
+          REGISTRY="${REGISTRY%/}"
+
+          # --- Effective Docker Hub proxy project ---
+          # Resolution order: input -> org var -> runner env. No default: the proxy
+          # cache is opt-in so runners without Harbor config keep their direct pulls.
+          PROXY_PROJECT="${INPUT_PROXY_PROJECT:-${VAR_PROXY_PROJECT:-${HARBOR_DOCKERHUB_PROXY:-}}}"
+
+          # --- Is the proxy cache active? ---
+          # Requires BOTH a resolvable registry host AND a proxy project so that every
+          # rewritten image reference is well-formed.
+          if [ -n "$REGISTRY" ] && [ -n "$PROXY_PROJECT" ]; then
+            PROXY_ENABLED=true
+          else
+            PROXY_ENABLED=false
+          fi
+
+          # --- Rewrite the nested DinD image (always an official image) ---
+          DIND_IMAGE=docker:28-dind
+          if [ "$PROXY_ENABLED" = true ]; then
+            DIND_IMAGE="${REGISTRY}/${PROXY_PROJECT}/library/${DIND_IMAGE}"
+          fi
+
+          # --- Rewrite the render image (Docker Hub references only) ---
+          # Left unchanged: ghcr.io / quay.io / localhost / any registry-qualified
+          # reference (first path segment contains a dot or colon AND there is a
+          # slash). An explicit docker.io/ prefix is stripped first. Official
+          # (no-slash) images gain a /library/ segment; user/repo images keep their
+          # path under the proxy project.
+          RENDER_IMAGE="$QUARTO_IMAGE"
+          if [ "$PROXY_ENABLED" = true ]; then
+            IMG="$QUARTO_IMAGE"
+            case "$IMG" in
+              docker.io/*) IMG="${IMG#docker.io/}" ;;
+            esac
+            case "$IMG" in
+              */*)
+                first="${IMG%%/*}"
+                if [[ "$first" != *"."* && "$first" != *":"* ]]; then
+                  RENDER_IMAGE="${REGISTRY}/${PROXY_PROJECT}/${IMG}"
+                fi
+                ;;
+              *)
+                RENDER_IMAGE="${REGISTRY}/${PROXY_PROJECT}/library/${IMG}"
+                ;;
+            esac
+          fi
+
+          # --- Runner proxy env forwarding ---
+          # Detect whether any proxy is configured on the runner (URL-bearing vars).
+          PROXY_PRESENT=false
+          for v in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+            if [ -n "${!v:-}" ]; then PROXY_PRESENT=true; break; fi
+          done
+
+          # Merged NO_PROXY: internal endpoints + any existing NO_PROXY/no_proxy,
+          # de-duplicated (order preserved). Only computed when a proxy is present.
+          MERGED_NO_PROXY=""
+          if [ "$PROXY_PRESENT" = true ]; then
+            INTERNAL=(localhost 127.0.0.1 ::1 dind harbor.ebruno.fr nexus.ebruno.fr nexus-api.ebruno.fr)
+            [ -n "$REGISTRY" ] && INTERNAL+=("$REGISTRY")
+            declare -A _seen=()
+            for src in "${INTERNAL[@]}" "${NO_PROXY:-}" "${no_proxy:-}"; do
+              [ -z "$src" ] && continue
+              IFS=',' read -ra _parts <<< "$src"
+              for e in "${_parts[@]}"; do
+                [ -z "$e" ] && continue
+                if [ -z "${_seen[$e]:-}" ]; then
+                  _seen[$e]=1
+                  if [ -n "$MERGED_NO_PROXY" ]; then MERGED_NO_PROXY="${MERGED_NO_PROXY},${e}"; else MERGED_NO_PROXY="$e"; fi
+                fi
+              done
+            done
+          fi
+
+          # Names (never values) of the proxy vars actually set on the runner.
+          PROXY_NAMES=""
+          for v in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
+            if [ -n "${!v:-}" ]; then
+              if [ -n "$PROXY_NAMES" ]; then PROXY_NAMES="${PROXY_NAMES} ${v}"; else PROXY_NAMES="$v"; fi
+            fi
+          done
+
+          echo "Proxy cache: $( [ "$PROXY_ENABLED" = true ] && echo enabled || echo disabled )"
+          if [ "$PROXY_ENABLED" = true ]; then
+            echo "Harbor registry host: $REGISTRY"
+            echo "Docker Hub proxy project: $PROXY_PROJECT"
+          fi
+          echo "DinD image: $DIND_IMAGE"
+          echo "Render image: $RENDER_IMAGE"
+          if [ "$PROXY_PRESENT" = true ]; then
+            echo "Forwarding proxy env vars: $PROXY_NAMES"
+            echo "Merged NO_PROXY: $MERGED_NO_PROXY"
+          else
+            echo "Forwarding proxy env vars: (none set on runner)"
+          fi
+
+          {
+            echo "registry=$REGISTRY"
+            echo "proxy_project=$PROXY_PROJECT"
+            echo "proxy_enabled=$PROXY_ENABLED"
+            echo "dind_image=$DIND_IMAGE"
+            echo "render_image=$RENDER_IMAGE"
+            echo "proxy_present=$PROXY_PRESENT"
+            echo "merged_no_proxy=$MERGED_NO_PROXY"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Set up isolated DinD
         id: nested_dind
         if: steps.docker_detect.outputs.socket == 'true' && inputs.nested-dind
         env:
           RUN_ID: ${{ github.run_id }}
           ATTEMPT: ${{ github.run_attempt }}
+          DIND_IMAGE_RESOLVED: ${{ steps.proxy.outputs.dind_image }}
+          PROXY_PRESENT: ${{ steps.proxy.outputs.proxy_present }}
+          MERGED_NO_PROXY: ${{ steps.proxy.outputs.merged_no_proxy }}
         run: |
           set -euo pipefail
 
-          DIND_IMAGE=docker:28-dind
+          DIND_IMAGE="$DIND_IMAGE_RESOLVED"
           DIND_NETWORK="qk-dind-${RUN_ID}-${ATTEMPT}"
           DIND_CONTAINER="qk-dind-${RUN_ID}-${ATTEMPT}-daemon"
           CERT_DIR="${RUNNER_TEMP}/qk-dind-certs"
@@ -154,6 +296,22 @@ jobs:
             DIND_RUN_ARGS+=(-v "${HOME}/.docker:/root/.docker:ro")
           fi
 
+          # Forward runner proxy env vars into the nested daemon so its image pulls
+          # use the same egress/proxy as the runner. Only vars actually set are
+          # forwarded; NO_PROXY is always the merged value (internal endpoints) so
+          # dind/harbor/nexus bypass the proxy. Proxy URLs are runner egress config,
+          # not secrets, and are not printed here.
+          if [ "${PROXY_PRESENT:-false}" = "true" ]; then
+            for v in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+              if [ -n "${!v:-}" ]; then
+                DIND_RUN_ARGS+=("-e" "$v=${!v}")
+              fi
+            done
+            DIND_RUN_ARGS+=("-e" "NO_PROXY=${MERGED_NO_PROXY}")
+            DIND_RUN_ARGS+=("-e" "no_proxy=${MERGED_NO_PROXY}")
+            echo "Forwarding proxy env vars into DinD container"
+          fi
+
           docker pull "$DIND_IMAGE"
           docker run "${DIND_RUN_ARGS[@]}" "$DIND_IMAGE"
 
@@ -187,11 +345,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
-          QUARTO_IMAGE: ${{ inputs.quarto-image }}
+          QUARTO_IMAGE: ${{ steps.proxy.outputs.render_image }}
           EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
           NESTED_DIND_ENABLED: ${{ steps.nested_dind.outputs.enabled }}
           NESTED_DIND_NETWORK: ${{ steps.nested_dind.outputs.dind_network }}
           NESTED_DIND_CERT_DIR: ${{ steps.nested_dind.outputs.dind_cert_dir }}
+          PROXY_PRESENT: ${{ steps.proxy.outputs.proxy_present }}
+          MERGED_NO_PROXY: ${{ steps.proxy.outputs.merged_no_proxy }}
         run: |
           set -euo pipefail
 
@@ -280,9 +440,24 @@ jobs:
               echo "No Docker socket found: rendering without Docker access"
             fi
 
+            # Forward runner proxy env vars into the render container. Only vars
+            # actually set are forwarded; NO_PROXY is always the merged value
+            # (internal endpoints) so dind/harbor/nexus bypass the proxy.
+            if [ "${PROXY_PRESENT:-false}" = "true" ]; then
+              for v in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+                if [ -n "${!v:-}" ]; then
+                  DOCKER_RUN_ARGS+=("-e" "$v=${!v}")
+                fi
+              done
+              DOCKER_RUN_ARGS+=("-e" "NO_PROXY=${MERGED_NO_PROXY}")
+              DOCKER_RUN_ARGS+=("-e" "no_proxy=${MERGED_NO_PROXY}")
+              echo "Forwarding proxy env vars into render container"
+            fi
+
             # Log the exact resolved command so a hang/failure is reproducible from the
             # log alone. No secret is present in DOCKER_RUN_ARGS (the org PAT is consumed
-            # by `docker login` above, not passed into the container).
+            # by `docker login` above, not passed into the container; the forwarded
+            # proxy URLs are runner egress config, not secrets).
             echo "==> docker run ${DOCKER_RUN_ARGS[*]}"
             echo "==>   image: $QUARTO_IMAGE"
             echo "==>   inner shell: bash -lc <RENDER_CMD>, PROFILE=$p"
