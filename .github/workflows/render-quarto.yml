@@ -205,6 +205,14 @@ jobs:
               --rm
               -v "$GITHUB_WORKSPACE":/workdir
               -w /workdir
+              # Pin the helper directory contract consumed by jupyter-base's helper
+              # scripts (get_src_dir.sh / gitpull.sh): NB_USER, WORK_DIR and
+              # EXAMPLES_DIR are set explicitly so git clones and static includes
+              # resolve to the same /home/jovyan/work paths in every render mode
+              # (nested DinD, socket bridge, none), independent of container $HOME.
+              -e NB_USER=jovyan
+              -e WORK_DIR=/home/jovyan/work
+              -e EXAMPLES_DIR=/home/jovyan/work/examples
             )
 
             if [ "$NESTED_DIND_ENABLED" = "true" ]; then
