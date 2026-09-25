@@ -115,10 +115,20 @@ jobs:
           # cache is opt-in so runners without Harbor config keep their direct pulls.
           PROXY_PROJECT="${INPUT_PROXY_PROJECT:-${VAR_PROXY_PROJECT:-${HARBOR_DOCKERHUB_PROXY:-}}}"
 
+          # --- Validate the proxy project name (sibling convention) ---
+          # Harbor project names must match ^[a-z0-9][a-z0-9._-]*$. A malformed value
+          # (e.g. stray uppercase/whitespace from an org var) must never break the
+          # render: we fall back to direct pulls and warn instead of aborting.
+          PROXY_PROJECT_VALID=true
+          if [ -n "$PROXY_PROJECT" ] && ! [[ "$PROXY_PROJECT" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+            PROXY_PROJECT_VALID=false
+          fi
+
           # --- Is the proxy cache active? ---
-          # Requires BOTH a resolvable registry host AND a proxy project so that every
-          # rewritten image reference is well-formed.
-          if [ -n "$REGISTRY" ] && [ -n "$PROXY_PROJECT" ]; then
+          # Requires BOTH a resolvable registry host AND a well-formed proxy project so
+          # that every rewritten image reference is valid. A malformed project name
+          # disables the cache (direct pulls) rather than failing the render.
+          if [ -n "$REGISTRY" ] && [ -n "$PROXY_PROJECT" ] && [ "$PROXY_PROJECT_VALID" = true ]; then
             PROXY_ENABLED=true
           else
             PROXY_ENABLED=false
@@ -191,6 +201,9 @@ jobs:
           done
 
           echo "Proxy cache: $( [ "$PROXY_ENABLED" = true ] && echo enabled || echo disabled )"
+          if [ -n "$PROXY_PROJECT" ] && [ "$PROXY_PROJECT_VALID" != true ]; then
+            echo "WARNING: Docker Hub proxy project '$PROXY_PROJECT' does not match ^[a-z0-9][a-z0-9._-]*$; proxy cache disabled, falling back to direct image pulls."
+          fi
           if [ "$PROXY_ENABLED" = true ]; then
             echo "Harbor registry host: $REGISTRY"
             echo "Docker Hub proxy project: $PROXY_PROJECT"
@@ -207,6 +220,7 @@ jobs:
           {
             echo "registry=$REGISTRY"
             echo "proxy_project=$PROXY_PROJECT"
+            echo "proxy_project_valid=$PROXY_PROJECT_VALID"
             echo "proxy_enabled=$PROXY_ENABLED"
             echo "dind_image=$DIND_IMAGE"
             echo "render_image=$RENDER_IMAGE"
@@ -454,11 +468,36 @@ jobs:
               echo "Forwarding proxy env vars into render container"
             fi
 
-            # Log the exact resolved command so a hang/failure is reproducible from the
-            # log alone. No secret is present in DOCKER_RUN_ARGS (the org PAT is consumed
-            # by `docker login` above, not passed into the container; the forwarded
-            # proxy URLs are runner egress config, not secrets).
-            echo "==> docker run ${DOCKER_RUN_ARGS[*]}"
+            # Log a reproducible-but-redacted view of the resolved command. Env values
+            # that may carry credentials (proxy URLs) and NO_PROXY are replaced with
+            # <redacted> so the log keeps the image, mounts, env keys and command
+            # structure without leaking secrets. The org PAT is never in
+            # DOCKER_RUN_ARGS (it is consumed by `docker login` above, not passed into
+            # the container). Proxy forwarding remains visible via the env key names.
+            LOG_ARGS=()
+            i=0
+            n=${#DOCKER_RUN_ARGS[@]}
+            while [ "$i" -lt "$n" ]; do
+              a="${DOCKER_RUN_ARGS[$i]}"
+              if [ "$a" = "-e" ] && [ "$((i + 1))" -lt "$n" ]; then
+                kv="${DOCKER_RUN_ARGS[$((i + 1))]}"
+                k="${kv%%=*}"
+                case "$k" in
+                  HTTP_PROXY|HTTPS_PROXY|http_proxy|https_proxy|NO_PROXY|no_proxy)
+                    LOG_ARGS+=("-e" "${k}=<redacted>")
+                    ;;
+                  *)
+                    LOG_ARGS+=("-e" "$kv")
+                    ;;
+                esac
+                i=$((i + 2))
+              else
+                LOG_ARGS+=("$a")
+                i=$((i + 1))
+              fi
+            done
+
+            echo "==> docker run ${LOG_ARGS[*]}"
             echo "==>   image: $QUARTO_IMAGE"
             echo "==>   inner shell: bash -lc <RENDER_CMD>, PROFILE=$p"
 
