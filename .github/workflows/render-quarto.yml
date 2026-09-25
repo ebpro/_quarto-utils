@@ -99,17 +99,56 @@ jobs:
 
           docker network create "$DIND_NETWORK"
 
+          # Detect the cgroup layout of the caller environment so the nested
+          # daemon is given a cgroup tree it can actually use. The previous
+          # strategy masked /sys/fs/cgroup with an empty tmpfs, which left the
+          # nested daemon without a `devices` cgroup and failed with:
+          #   failed to start daemon: Devices cgroup isn't mounted
+          # Instead we bind-mount the caller's existing cgroupfs.
+          if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+            CGROUP_MODE=cgroup2
+          elif [ -d /sys/fs/cgroup/devices ]; then
+            CGROUP_MODE=cgroup1
+          else
+            CGROUP_FSTYPE=$(stat -fc %T /sys/fs/cgroup 2>/dev/null || echo unknown)
+            case "$CGROUP_FSTYPE" in
+              cgroup2|cgroup2fs) CGROUP_MODE=cgroup2 ;;
+              tmpfs) CGROUP_MODE=cgroup1 ;;
+              *) CGROUP_MODE=unknown ;;
+            esac
+          fi
+
+          echo "Nested DinD cgroup mode: $CGROUP_MODE"
+          stat -fc '%n %T' /sys/fs/cgroup || true
+          grep ' /sys/fs/cgroup ' /proc/self/mountinfo || true
+
           DIND_RUN_ARGS=(
             -d
             --privileged
-            --cgroupns=host
-            --tmpfs /sys/fs/cgroup
             --name "$DIND_CONTAINER"
             --network "$DIND_NETWORK"
             --network-alias dind
             -e DOCKER_TLS_CERTDIR=/certs
             -e DOCKER_TLS_SAN=DNS:dind
           )
+
+          if [ "$CGROUP_MODE" = cgroup1 ]; then
+            # Recursive read-only bind of the caller's cgroup tree so the nested
+            # daemon sees the devices (and other) controllers already mounted.
+            DIND_RUN_ARGS+=(
+              --mount "type=bind,src=/sys/fs/cgroup,dst=/sys/fs/cgroup,readonly,bind-propagation=rslave"
+            )
+          elif [ "$CGROUP_MODE" = cgroup2 ]; then
+            # Host cgroup namespace plus a writable bind so the daemon can create
+            # its own cgroups in the unified hierarchy.
+            DIND_RUN_ARGS+=(
+              --cgroupns=host
+              --mount "type=bind,src=/sys/fs/cgroup,dst=/sys/fs/cgroup,bind-propagation=rprivate"
+            )
+          else
+            echo "Unsupported cgroup layout in caller container"
+            exit 1
+          fi
 
           if [ -f "${HOME}/.docker/config.json" ]; then
             DIND_RUN_ARGS+=(-v "${HOME}/.docker:/root/.docker:ro")
@@ -129,6 +168,9 @@ jobs:
 
           if [ "$ready" != true ]; then
             echo "Isolated DinD failed to become ready"
+            echo "CGROUP_MODE=${CGROUP_MODE}"
+            stat -fc '%n %T' /sys/fs/cgroup || true
+            grep ' /sys/fs/cgroup ' /proc/self/mountinfo || true
             docker logs "$DIND_CONTAINER" || true
             exit 1
           fi
