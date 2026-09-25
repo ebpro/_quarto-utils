@@ -179,6 +179,11 @@ jobs:
           echo "Nested DinD ready: network=$DIND_NETWORK container=$DIND_CONTAINER certs=$CERT_DIR"
 
       - name: Render with Quarto (Docker)
+        # Fail fast: a hung render (blocked browser/tool install, stalled container,
+        # or a wedged nested-DinD TLS handshake) must not silently burn the full
+        # 360-minute job budget. 30 minutes covers the image pull plus a normal
+        # notes+slides render with headroom, and surfaces the failure for diagnosis.
+        timeout-minutes: 30
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
@@ -197,6 +202,32 @@ jobs:
             echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           fi
 
+          # Inner container command. Kept as a single-quoted string so the outer step
+          # shell performs NO expansion on it; the render profile is injected via the
+          # PROFILE env var (see DOCKER_RUN_ARGS) and expanded by the inner shell. This
+          # keeps the command we log identical to the command we execute.
+          #
+          # Pre-render diagnostics are deliberately non-fatal: they only report what is
+          # actually present on PATH (never inventing a binary path) and cannot abort the
+          # render, so a missing/stalled browser shows up in the log without hiding the
+          # real render outcome.
+          RENDER_CMD='
+            # [diag] Resolve the Chromium binary headless render would use, when present.
+            for c in chromium chromium-browser google-chrome; do
+              if command -v "$c" >/dev/null 2>&1; then
+                echo "[diag] chromium candidate on PATH: $c -> $(command -v "$c")"
+                "$c" --version 2>&1 | head -n1 || true
+              fi
+            done
+            command -v chromium >/dev/null 2>&1 || echo "[diag] no chromium binary found on PATH"
+            echo "[diag] quarto: $(quarto --version 2>&1 || true)"
+            # sdkman-init so sdkman language tools (e.g. java for IJava) are on PATH.
+            # stderr is left VISIBLE (no blanket suppression) so a stall is diagnosable;
+            # non-fatal when sdkman is absent.
+            source /home/jovyan/.sdkman/bin/sdkman-init.sh || true
+            quarto render --profile "$PROFILE"
+          '
+
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
@@ -213,6 +244,9 @@ jobs:
               -e NB_USER=jovyan
               -e WORK_DIR=/home/jovyan/work
               -e EXAMPLES_DIR=/home/jovyan/work/examples
+              # Profile passed as an env var so RENDER_CMD can stay a plain single-quoted
+              # string with no outer-shell expansion (see above).
+              -e PROFILE="$p"
             )
 
             if [ "$NESTED_DIND_ENABLED" = "true" ]; then
@@ -246,9 +280,16 @@ jobs:
               echo "No Docker socket found: rendering without Docker access"
             fi
 
+            # Log the exact resolved command so a hang/failure is reproducible from the
+            # log alone. No secret is present in DOCKER_RUN_ARGS (the org PAT is consumed
+            # by `docker login` above, not passed into the container).
+            echo "==> docker run ${DOCKER_RUN_ARGS[*]}"
+            echo "==>   image: $QUARTO_IMAGE"
+            echo "==>   inner shell: bash -lc <RENDER_CMD>, PROFILE=$p"
+
             docker run "${DOCKER_RUN_ARGS[@]}" \
               "$QUARTO_IMAGE" \
-              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
+              bash -lc "$RENDER_CMD"
           done
 
       - name: Clean up isolated DinD
