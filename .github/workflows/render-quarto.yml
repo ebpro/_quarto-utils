@@ -358,9 +358,9 @@ jobs:
       - name: Render with Quarto (Docker)
         # Fail fast: a hung render (blocked browser/tool install, stalled container,
         # or a wedged nested-DinD TLS handshake) must not silently burn the full
-        # 360-minute job budget. 30 minutes covers the image pull plus a normal
+        # 360-minute job budget. 60 minutes covers the image pull plus a normal
         # notes+slides render with headroom, and surfaces the failure for diagnosis.
-        timeout-minutes: 30
+        timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
