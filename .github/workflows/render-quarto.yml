@@ -48,10 +48,15 @@ on:
         required: false
         type: string
         default: ''
+      runner-pool:
+        description: 'Self-hosted runner pool label for the render job. "ebpro-org" (default) = standard pool; "large" = high-memory pool for memory-heavy renders (e.g. notebook-containers-intro). Any other value falls back to the standard pool.'
+        required: false
+        type: string
+        default: 'ebpro-org'
 
 jobs:
   render:
-    runs-on: [self-hosted, linux, ebpro-org, x64]
+    runs-on: ${{ inputs.runner-pool == 'large' && fromJSON('["self-hosted","linux","x64","large"]') || fromJSON('["self-hosted","linux","ebpro-org","x64"]') }}
     permissions:
       contents: read
       actions: write
