@@ -46,6 +46,7 @@ on:
 
 jobs:
   render:
+    timeout-minutes: 90
     runs-on: [self-hosted, linux, ebpro-org, x64]
     permissions:
       contents: read
@@ -93,6 +94,7 @@ jobs:
           cat /tmp/quarto-cache-canary/marker.txt
 
       - name: Render with Quarto (Docker)
+        timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
