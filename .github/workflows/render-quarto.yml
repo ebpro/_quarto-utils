@@ -28,11 +28,21 @@ on:
         required: false
         type: string
         default: '_output'
-      deploy:
-        description: 'Deploy rendered site to GitHub Pages (push events only)'
+      deploy-pages:
+        description: 'Deploy to GitHub Pages (main branch only)'
         required: false
         type: boolean
         default: true
+      deploy-cloudflare:
+        description: 'Deploy to Cloudflare Pages preview (non-main branches)'
+        required: false
+        type: boolean
+        default: true
+      cf-project-name:
+        description: 'Cloudflare Pages project name (default: derive from repo name)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   render:
@@ -68,16 +78,9 @@ jobs:
           QUARTO_IMAGE: ${{ inputs.quarto-image }}
           EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
         run: |
-          # Private GHCR images (e.g. ghcr.io/ebpro/solen) are not pullable anonymously:
-          # authenticate with the org PAT (has read access to the package); docker login
-          # exchanges it for a short-lived pull token.
           if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "$EBPRO_CI_PAT" ]; then
             echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           fi
-          # Render inside the provided Docker image (default: Solen lecture image, which
-          # bundles Quarto plus bash/zsh/python3/Java Jupyter kernels). Mount the full
-          # workspace and run the requested profiles. Login shell + sdkman-init so
-          # language tools installed via sdkman (e.g. java for IJava) are on PATH.
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
@@ -111,9 +114,9 @@ jobs:
           path: site-zip.zip
           retention-days: 7
 
-  deploy:
+  deploy-pages:
     needs: render
-    if: inputs.deploy && github.event_name == 'push'
+    if: inputs.deploy-pages && github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: [self-hosted, linux, ebpro-org, x64]
     permissions:
       pages: write
@@ -143,3 +146,57 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Announce
+        run: |
+          echo "✅ Stable deployment live: https://${{ github.repository_owner }}.github.io/${{ github.repository }}/"
+
+  deploy-cloudflare:
+    needs: render
+    if: inputs.deploy-cloudflare && github.ref != 'refs/heads/main' && github.event_name == 'push'
+    runs-on: [self-hosted, linux, ebpro-org, x64]
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: site-zip
+          path: site-zip
+
+      - name: Unpack site
+        run: |
+          mkdir -p site
+          cd site-zip
+          unzip -o site-zip.zip -d ../site
+          echo "Site ready: $(find ../site -type f | wc -l) files"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Deploy to Cloudflare Pages (preview)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_PROJECT: ${{ inputs.cf-project-name }}
+          REPO_NAME: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          # Derive project name if not explicitly set
+          PROJECT="${CF_PROJECT}"
+          if [ -z "$PROJECT" ]; then
+            PROJECT="$(echo "$REPO_NAME" | sed 's|.*/||')"
+          fi
+
+          echo "Deploying to Cloudflare Pages project: $PROJECT (branch: $BRANCH)"
+
+          # Deploy using wrangler
+          npx --yes wrangler@latest pages deploy ./site \
+            --project-name="$PROJECT" \
+            --commit-hash="$SHA" \
+            --branch="$BRANCH" \
+            --commit-message="CI deploy: $BRANCH @ ${SHA:0:7}"
+
+          echo ""
+          echo "🔍 Preview deployment complete for branch: $BRANCH"
+          echo "   URL will be printed above by wrangler (format: https://<hash>--$PROJECT.pages.dev)"
