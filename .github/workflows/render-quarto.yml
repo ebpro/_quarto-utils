@@ -71,6 +71,27 @@ jobs:
       - name: Create compatibility symlink
         run: ln -s _quarto-utils quarto-utils
 
+      - name: Cache restore (validate)
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/quarto-cache-canary
+          key: quarto-render-${{ runner.os }}-${{ inputs.quarto-image }}
+          restore-keys: |
+            quarto-render-${{ runner.os }}-
+
+      - name: Cache canary marker
+        run: |
+          mkdir -p /tmp/quarto-cache-canary
+          if [ "${{ steps.cache-restore.outputs.cache-hit }}" = "true" ]; then
+            echo "✅ CACHE HIT — previous marker:"
+            cat /tmp/quarto-cache-canary/marker.txt
+          else
+            echo "ℹ️  CACHE MISS — first run for this key, will be saved"
+          fi
+          echo "ts=$(date -u +%Y%m%dT%H%M%SZ) run=${{ github.run_id }}" > /tmp/quarto-cache-canary/marker.txt
+          cat /tmp/quarto-cache-canary/marker.txt
+
       - name: Render with Quarto (Docker)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -113,6 +134,13 @@ jobs:
           name: site-zip
           path: site-zip.zip
           retention-days: 7
+
+      - name: Cache save (validate)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/quarto-cache-canary
+          key: quarto-render-${{ runner.os }}-${{ inputs.quarto-image }}
 
   deploy-pages:
     needs: render
