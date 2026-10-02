@@ -1,5 +1,9 @@
 name: Render Quarto Documents (reusable)
 
+defaults:
+  run:
+    shell: bash
+
 on:
   workflow_call:
     inputs:
@@ -43,6 +47,10 @@ on:
         required: false
         type: string
         default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   render:
@@ -101,23 +109,42 @@ jobs:
           QUARTO_IMAGE: ${{ inputs.quarto-image }}
           EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
         run: |
+          RENDER_CONTAINER="quarto-render-${{ github.run_id }}"
+          trap 'docker rm -f "$RENDER_CONTAINER" >/dev/null 2>&1 || true' EXIT
           if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "$EBPRO_CI_PAT" ]; then
             echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          fi
+          SDKMAN_INIT=""
+          for cand in /home/jovyan/.sdkman/bin/sdkman-init.sh /root/.sdkman/bin/sdkman-init.sh "$HOME/.sdkman/bin/sdkman-init.sh"; do
+            if [ -f "$cand" ]; then SDKMAN_INIT="$cand"; break; fi
+          done
+          if [ -z "$SDKMAN_INIT" ]; then
+            echo "::warning::sdkman-init.sh not found; IJava cells may lack a JDK"
           fi
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
-            docker run --rm \
+            docker run --rm --name "$RENDER_CONTAINER" \
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "$QUARTO_IMAGE" \
-              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
+              bash -lc "source '$SDKMAN_INIT' 2>/dev/null || true; quarto render --profile '$p'"
           done
 
       - name: Package rendered output
-        id: package
         run: |
-          cd "${{ github.workspace }}/_output"
+          OUT_DIR="${{ github.workspace }}/${{ inputs.output-path }}"
+          if [ ! -d "$OUT_DIR" ]; then
+            echo "::error::Output dir not found: $OUT_DIR — render produced nothing; refusing to deploy an empty site"
+            exit 1
+          fi
+          FILE_COUNT=$(find "$OUT_DIR" -type f | wc -l)
+          echo "Packaging $FILE_COUNT files from $OUT_DIR"
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "::error::Output dir is empty: $OUT_DIR — refusing to deploy an empty site"
+            exit 1
+          fi
+          cd "$OUT_DIR"
           python3 -c "
           import zipfile, os
           zf = zipfile.ZipFile('${{ github.workspace }}/site-zip.zip', 'w', zipfile.ZIP_DEFLATED)
@@ -128,7 +155,6 @@ jobs:
           zf.close()
           print(f'Created zip: {os.path.getsize(\"${{ github.workspace }}/site-zip.zip\")} bytes')
           "
-          echo "site-name=site-zip" >> "$GITHUB_OUTPUT"
 
       - name: Upload site artifact
         uses: actions/upload-artifact@v4
@@ -139,6 +165,7 @@ jobs:
 
       - name: Cache save (validate)
         if: always()
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: /tmp/quarto-cache-canary
@@ -147,6 +174,7 @@ jobs:
   deploy-pages:
     needs: render
     if: inputs.deploy-pages && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 15
     runs-on: [self-hosted, linux, ebpro-org, x64]
     permissions:
       pages: write
@@ -184,6 +212,7 @@ jobs:
   deploy-cloudflare:
     needs: render
     if: inputs.deploy-cloudflare && github.ref != 'refs/heads/main' && github.event_name == 'push'
+    timeout-minutes: 15
     runs-on: [self-hosted, linux, ebpro-org, x64]
     steps:
       - name: Download site artifact
@@ -207,10 +236,18 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
         run: |
-          # Derive project name if not explicitly set
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::CF_API_TOKEN secret is not set or not visible to this repo; cannot deploy preview"
+            exit 1
+          fi
+          # Derive + sanitize project name (CF Pages requires ^[a-z0-9][a-z0-9-]{0,62}$)
           PROJECT="${CF_PROJECT}"
           if [ -z "$PROJECT" ]; then
-            PROJECT="$(echo "$REPO_NAME" | sed 's|.*/||')"
+            PROJECT="$(echo "$REPO_NAME" | sed 's|.*/||' | tr 'A-Z' 'a-z' | tr '_' '-')"
+          fi
+          if ! echo "$PROJECT" | grep -Eq '^[a-z0-9][a-z0-9-]{0,62}$'; then
+            echo "::error::Derived CF project name '$PROJECT' is invalid (must match ^[a-z0-9][a-z0-9-]{0,62}\$). Set cf-project-name explicitly in the wrapper."
+            exit 1
           fi
 
           echo "Deploying to Cloudflare Pages project: $PROJECT (branch: $BRANCH)"
