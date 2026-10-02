@@ -199,11 +199,6 @@ jobs:
           unzip -o site-zip.zip -d ../site
           echo "Site ready: $(find ../site -type f | wc -l) files"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Deploy to Cloudflare Pages (preview)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -221,7 +216,7 @@ jobs:
           echo "Deploying to Cloudflare Pages project: $PROJECT (branch: $BRANCH)"
 
           # Deploy using wrangler
-          npx --yes wrangler@latest pages deploy ./site \
+          npx --yes wrangler@4.146.0 pages deploy ./site \
             --project-name="$PROJECT" \
             --commit-hash="$SHA" \
             --branch="$BRANCH" \
