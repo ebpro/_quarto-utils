@@ -207,7 +207,7 @@ jobs:
 
       - name: Announce
         run: |
-          echo "✅ Stable deployment live: https://${{ github.repository_owner }}.github.io/${{ github.repository }}/"
+          echo "✅ Stable deployment live: https://${{ github.repository_owner }}.github.io/$(basename "${{ github.repository }}")/"
 
   deploy-cloudflare:
     needs: render
