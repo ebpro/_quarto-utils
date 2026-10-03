@@ -114,13 +114,6 @@ jobs:
           if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "$EBPRO_CI_PAT" ]; then
             echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           fi
-          SDKMAN_INIT=""
-          for cand in /home/jovyan/.sdkman/bin/sdkman-init.sh /root/.sdkman/bin/sdkman-init.sh "$HOME/.sdkman/bin/sdkman-init.sh"; do
-            if [ -f "$cand" ]; then SDKMAN_INIT="$cand"; break; fi
-          done
-          if [ -z "$SDKMAN_INIT" ]; then
-            echo "::warning::sdkman-init.sh not found; IJava cells may lack a JDK"
-          fi
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
@@ -128,7 +121,7 @@ jobs:
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "$QUARTO_IMAGE" \
-              bash -lc "source '$SDKMAN_INIT' 2>/dev/null || true; quarto render --profile '$p'"
+              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
           done
 
       - name: Package rendered output
