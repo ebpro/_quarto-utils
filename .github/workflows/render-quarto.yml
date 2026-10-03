@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: ''
+      enable-docker:
+        description: 'Mount the host Docker socket so docker cells render live (dooD)'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -108,11 +113,41 @@ jobs:
           PROFILES: ${{ inputs.profiles }}
           QUARTO_IMAGE: ${{ inputs.quarto-image }}
           EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
+          ENABLE_DOCKER: ${{ inputs.enable-docker }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          RENDER_CONTAINER="quarto-render-${{ github.run_id }}"
-          trap 'docker rm -f "$RENDER_CONTAINER" >/dev/null 2>&1 || true' EXIT
+          RENDER_CONTAINER="quarto-render-${RUN_ID}"
+          # dooD: extra docker-run args, appended ONLY when enabled. With
+          # enable-docker=false DOCKER_ARGS stays empty, so the docker run below
+          # executes byte-identical to v1.3.2 (no socket mount, no DOCKER_HOST env).
+          DOCKER_ARGS=()
+          if [ "$ENABLE_DOCKER" = "true" ]; then
+            DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
+            DOCKER_ARGS+=(-e DOCKER_HOST=unix:///var/run/docker.sock)
+          fi
+          # Keep the existing render-container removal, plus a best-effort sweep of
+          # any lecture containers this run left behind (label=ebpro-render=true).
+          # Both removals are non-fatal (|| true) so cleanup never masks the render result.
+          trap 'docker rm -f "$RENDER_CONTAINER" >/dev/null 2>&1 || true; docker ps -aq --filter "label=ebpro-render=true" | xargs -r docker rm -f || true' EXIT
           if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "$EBPRO_CI_PAT" ]; then
             echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          fi
+          # dooD canary: before spending a render, verify the host daemon is reachable
+          # from inside the image. Fails fast on a missing docker CLI or unmounted socket.
+          # Runs after the ghcr.io login above so a private image pull still succeeds.
+          if [ "$ENABLE_DOCKER" = "true" ]; then
+            echo ">> dooD canary: verifying host Docker daemon reachability"
+            if docker run --rm \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                -e DOCKER_HOST=unix:///var/run/docker.sock \
+                "$QUARTO_IMAGE" \
+                bash -lc 'docker --version && docker info --format "{{.ServerVersion}}" && echo "daemon OK"'; then
+              echo "✅ dooD canary passed (host daemon reachable)"
+            else
+              echo "daemon UNREACHABLE"
+              echo "::error::dooD canary FAILED: host Docker daemon unreachable (missing docker CLI in image, or /var/run/docker.sock not mounted)"
+              exit 1
+            fi
           fi
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
@@ -120,6 +155,7 @@ jobs:
             docker run --rm --name "$RENDER_CONTAINER" \
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
+              "${DOCKER_ARGS[@]}" \
               "$QUARTO_IMAGE" \
               bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
           done
