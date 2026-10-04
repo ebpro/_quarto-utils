@@ -9,7 +9,7 @@ on:
 
 jobs:
   call-shared-render:
-    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.0.4
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.2.1
     with:
       profiles: 'notes,slides'
       quarto-image: 'ghcr.io/ebpro/solen:quarto-full-chore-add-pyproject'
