@@ -124,6 +124,7 @@ jobs:
           if [ "$ENABLE_DOCKER" = "true" ]; then
             DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
             DOCKER_ARGS+=(-e DOCKER_HOST=unix:///var/run/docker.sock)
+            DOCKER_ARGS+=(--add-host dind:host-gateway)
           fi
           # Keep the existing render-container removal, plus a best-effort sweep of
           # any lecture containers this run left behind (label=ebpro-render=true).
