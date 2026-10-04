@@ -121,6 +121,9 @@ jobs:
           # enable-docker=false DOCKER_ARGS stays empty, so the docker run below
           # executes byte-identical to v1.3.2 (no socket mount, no DOCKER_HOST env).
           DOCKER_ARGS=()
+          # Unconditional: aligns gitpull.sh / get_src_dir.sh examples base path
+          # so `cd` into the cloned examples works in both dooD and non-dooD renders.
+          DOCKER_ARGS+=(-e EXAMPLES_DIR=/home/jovyan/work)
           if [ "$ENABLE_DOCKER" = "true" ]; then
             DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
             DOCKER_ARGS+=(-e DOCKER_HOST=unix:///var/run/docker.sock)
