@@ -226,7 +226,7 @@ jobs:
           echo "Site ready: $(find ../site -type f | wc -l) files"
 
       - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
