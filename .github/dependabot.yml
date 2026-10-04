@@ -13,3 +13,8 @@ updates:
       - "dependencies"
     # Leave reviewers empty by default; teams/repos can add reviewers via CODEOWNERS
     # Dependabot will update package.json and package-lock.json together.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
