@@ -155,6 +155,13 @@ jobs:
             fi
           fi
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
+          # Skip JPA content in CI: its cells use custom IJava magics
+          # (%%rdbmsSchema, ...) that only exist in the local devcontainer, not the
+          # render image. Rename the JPA .qmd/.quarto_ipynb files (keeping _init.qmd,
+          # which is already CI-safe) so Quarto cannot find them. This runs INSIDE the
+          # container (files live at /workdir, the mounted workspace) as a prefix to
+          # `quarto render`. The rename is idempotent, so re-running it per profile is
+          # a no-op after the first.
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
             docker run --rm --name "$RENDER_CONTAINER" \
@@ -162,7 +169,7 @@ jobs:
               -w /workdir \
               "${DOCKER_ARGS[@]}" \
               "$QUARTO_IMAGE" \
-              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
+              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; find /workdir -path '*notebook-java-jpa*' \( -name '*.qmd' -o -name '*.quarto_ipynb' \) ! -name '_init.qmd' -exec sh -c 'mv \"\$1\" \"\$1.ci-skip\"' _ {} \; 2>/dev/null || true; quarto render --profile '$p'"
           done
 
       - name: Package rendered output
