@@ -4,7 +4,7 @@ project:
 
   render:
     - "**/*.qmd"  # rend tous les fichiers .qmd par défaut (récursif)
-    - "!HIDDEN"  # ignore les fichiers marqués HIDDEN
+    - "!**/HIDDEN/**"  # ignore tout contenu sous un répertoire HIDDEN (à n'importe quelle profondeur)
     - "!_quarto-utils/**"
     - "!notebook-containers-intro/**"
 website:

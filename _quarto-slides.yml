@@ -3,7 +3,7 @@ project:
   render:
     - "**/*_L_*.qmd" # rend tous les fichiers de type Lecture (récursif)
     - "**/*_L_*.ipynb" # rend tous les fichiers de type Lecture (récursif)
-    - "!HIDDEN" # ignore les fichiers marqués HIDDEN
+    - "!**/HIDDEN/**" # ignore tout contenu sous un répertoire HIDDEN (à n'importe quelle profondeur)
     - "!_quarto-utils/**"
     - "!notebook-containers-intro/**"
 
