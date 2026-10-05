@@ -293,6 +293,14 @@ jobs:
 
           echo "Deploying to Cloudflare Pages project: $PROJECT (branch: $BRANCH)"
 
+          # Ensure the CF Pages project exists (idempotent). `wrangler pages project
+          # create` exits non-zero if the project already exists; we swallow that so
+          # the FIRST deploy auto-creates the project while re-deploys to an existing
+          # one still succeed. The account is auto-detected from CLOUDFLARE_API_TOKEN
+          # (same as the `pages deploy` below), so no CLOUDFLARE_ACCOUNT_ID is needed.
+          npx --yes wrangler@4.146.0 pages project create "$PROJECT" --production-branch=develop \
+            || echo "::notice::CF Pages project '$PROJECT' likely already exists; continuing"
+
           # Deploy using wrangler
           npx --yes wrangler@4.146.0 pages deploy ./site \
             --project-name="$PROJECT" \
