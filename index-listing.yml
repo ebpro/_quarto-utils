@@ -14,7 +14,6 @@ listing:
   grid-columns: 3
   grid-item-border: true
   image-height: 250px
-  page-size: 9
   
   # Metadata display
   fields:
@@ -28,8 +27,6 @@ listing:
   
   # Navigation and filtering
   categories: true
-  sort-ui: true
-  filter-ui: true
   date-format: "DD MMMM YYYY"
   
   # Custom template

@@ -33,9 +33,6 @@ website:
   sidebar:
     style: docked
     contents: auto
-  comments: 
-    utterances:
-      repo: ebpro/utterances
 
 format:  
   typst:
