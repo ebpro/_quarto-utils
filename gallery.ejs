@@ -1,8 +1,12 @@
+<div class="gallery-header">
+  <input type="search" class="gallery-search" placeholder="Rechercher..." aria-label="Rechercher">
+  <span class="gallery-count" id="gallery-count"></span>
+</div>
 <div class="gallery-grid">
 <% for (var i = 0; i < items.length; i++) { %>
 <% var item = items[i]; %>
 <% var isTP = item.path.indexOf('_P_') !== -1; %>
-<article class="g-card <%= isTP ? 'g-card--tp' : 'g-card--cours' %>">
+<article class="g-card <%= isTP ? 'g-card--tp' : 'g-card--cours' %>" data-title="<%= item.title.toLowerCase().replace(/"/g, '&quot;') %>" data-desc="<%= (item.description || '').toLowerCase().replace(/"/g, '&quot;') %>">
   <div class="g-card__badge"><%= isTP ? 'TP' : 'COURS' %></div>
   <h3 class="g-card__title"><%- item.title %></h3>
   <% if (item.subtitle) { %><p class="g-card__subtitle"><%- item.subtitle %></p><% } %>

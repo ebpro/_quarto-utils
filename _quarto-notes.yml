@@ -34,6 +34,10 @@ website:
     style: docked
     contents: auto
 
+  headincludes:
+    - text: |
+        <script src="_quarto-utils/gallery-search.js" defer></script>
+
 format:  
   typst:
     toc: true
