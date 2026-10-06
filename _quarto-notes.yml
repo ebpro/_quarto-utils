@@ -17,7 +17,7 @@ website:
     style: docked
     contents: auto
 
-  headincludes:
+  head-includes:
     - text: |
         <script src="_quarto-utils/gallery-search.js" defer></script>
 
