@@ -54,7 +54,7 @@ on:
         default: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
