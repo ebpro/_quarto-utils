@@ -12,23 +12,6 @@ website:
   open-graph: true
   page-navigation: true
   bread-crumbs: true
-  navbar:
-    background: primary
-    left:
-      - href: index.qmd
-        text: Home
-      - text: "EB"
-        href: https://bruno.univ-tln.fr
-      - text: "I111"
-        href: https://bruno.univ-tln.fr/I111.html
-      - text: "I211"
-        href: https://bruno.univ-tln.fr/I211.html
-      - text: "PO43"
-        href: https://bruno.univ-tln.fr/PO43.html
-      - text: "PM44"
-        href: https://bruno.univ-tln.fr/PM44.html
-      - text: "I311"
-        href: https://bruno.univ-tln.fr/I311.html
 
   sidebar:
     style: docked
