@@ -17,11 +17,7 @@ website:
     style: docked
     contents: auto
 
-  head-includes:
-    - text: |
-        <script src="_quarto-utils/gallery-search.js" defer></script>
-
-format:  
+format:
   typst:
     toc: true
     section-numbering: 1.1.a
@@ -44,6 +40,9 @@ format:
       #dark:  [darkly]  
 
     toc: true
+    include-in-header:
+      - text: |
+          <script src="_quarto-utils/gallery-search.js" defer></script>
 
 format-links:
   - html
