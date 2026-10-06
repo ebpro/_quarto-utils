@@ -1,82 +1,27 @@
-<%# Gallery - clean modern course index %>
-<div class="gallery-header">
-  <input type="search" class="gallery-search" placeholder="Rechercher..." aria-label="Rechercher dans le catalogue">
-  <span class="gallery-count" id="gallery-count"></span>
-</div>
-
-<div class="gallery-grid" id="gallery-grid">
-  <% var idx = 0; %>
-  <% for (const item of items) { %>
-    <% var isPractice = item.path.indexOf('_P_') !== -1; %>
-    <article class="g-card <%= isPractice ? 'g-card--tp' : 'g-card--cours' %>"
-             data-title="<%= item.title.toLowerCase().replace(/"/g, '&quot;') %>"
-             data-desc="<%= (item.description || '').toLowerCase().replace(/"/g, '&quot;') %>">
-      <div class="g-card__badge"><%= isPractice ? 'TP' : 'COURS' %></div>
-
-      <h3 class="g-card__title"><%- item.title %></h3>
-      <% if (item.subtitle) { %>
-        <p class="g-card__subtitle"><%- item.subtitle %></p>
-      <% } %>
-      <% if (item.description) { %>
-        <p class="g-card__desc"><%- item.description %></p>
-      <% } %>
-
-      <div class="g-card__meta">
-        <% if (item.date) { %>
-          <time><%- item.date %></time>
-        <% } %>
-      </div>
-
-      <div class="g-card__actions">
-        <% if (item.provide_notes !== false) { %>
-          <a href="<%= item.path.replace('.qmd', '.html') %>" class="g-btn g-btn--notes">
-            <span>Notes</span>
-          </a>
-        <% } %>
-        <% if (item.provide_slides !== false) { %>
-          <a href="_slides<%= item.path.replace('.qmd', '.html') %>" class="g-btn g-btn--slides">
-            <span>Slides</span>
-          </a>
-        <% } %>
-      </div>
-
-      <% if (idx < items.length - 1) { %>
-        <% var nextItem = items[idx + 1]; %>
-        <a href="<%= nextItem.path.replace('.qmd', '.html') %>" class="g-card__next" title="Suivant">&rarr;</a>
-      <% } %>
-    </article>
-    <% idx++; %>
+<div class="gallery-grid">
+<% for (var i = 0; i < items.length; i++) { %>
+<% var item = items[i]; %>
+<% var isTP = item.path.indexOf('_P_') !== -1; %>
+<article class="g-card <%= isTP ? 'g-card--tp' : 'g-card--cours' %>">
+  <div class="g-card__badge"><%= isTP ? 'TP' : 'COURS' %></div>
+  <h3 class="g-card__title"><%- item.title %></h3>
+  <% if (item.subtitle) { %><p class="g-card__subtitle"><%- item.subtitle %></p><% } %>
+  <% if (item.description) { %><p class="g-card__desc"><%- item.description %></p><% } %>
+  <div class="g-card__meta">
+    <% if (item.date) { %><time><%- item.date %></time><% } %>
+  </div>
+  <div class="g-card__actions">
+    <% if (item.provide_notes !== false) { %>
+    <a href="<%= item.path.replace('.qmd', '.html') %>" class="g-btn g-btn--notes"><span>Notes</span></a>
+    <% } %>
+    <% if (item.provide_slides !== false) { %>
+    <a href="_slides<%= item.path.replace('.qmd', '.html') %>" class="g-btn g-btn--slides"><span>Slides</span></a>
+    <% } %>
+  </div>
+  <% if (i < items.length - 1) { %>
+  <% var next = items[i + 1]; %>
+  <a href="<%= next.path.replace('.qmd', '.html') %>" class="g-card__next" title="Suivant">&rarr;</a>
   <% } %>
-</div>
-
-<% if (items.length === 0) { %>
-<div class="gallery-empty">
-  <p>Aucun contenu trouve.</p>
-</div>
+</article>
 <% } %>
-
-<script>
-(function() {
-  var input = document.querySelector('.gallery-search');
-  var cards = document.querySelectorAll('.g-card');
-  var count = document.getElementById('gallery-count');
-
-  if (count) { count.textContent = cards.length + (cards.length > 1 ? ' items' : ' item'); }
-
-  if (!input) { return; }
-
-  input.addEventListener('input', function() {
-    var q = this.value.toLowerCase().trim();
-    var visible = 0;
-    for (var i = 0; i < cards.length; i++) {
-      var card = cards[i];
-      var title = card.getAttribute('data-title') || '';
-      var desc = card.getAttribute('data-desc') || '';
-      var match = (!q || title.indexOf(q) !== -1 || desc.indexOf(q) !== -1);
-      card.style.display = match ? '' : 'none';
-      if (match) { visible++; }
-    }
-    if (count) { count.textContent = visible + (visible > 1 ? ' items' : ' item'); }
-  });
-})();
-</script>
+</div>
