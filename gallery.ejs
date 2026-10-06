@@ -1,19 +1,18 @@
-<%# Gallery — clean modern course index %>
+<%# Gallery - clean modern course index %>
 <div class="gallery-header">
-  <input type="search" class="gallery-search" placeholder="Rechercher…" aria-label="Rechercher dans le catalogue">
+  <input type="search" class="gallery-search" placeholder="Rechercher..." aria-label="Rechercher dans le catalogue">
   <span class="gallery-count" id="gallery-count"></span>
 </div>
 
 <div class="gallery-grid" id="gallery-grid">
-  <% let prevPath = null; %>
+  <% var idx = 0; %>
   <% for (const item of items) { %>
-    <% const isPractice = item.path.includes('_P_'); %>
-    <% const isLecture = item.path.includes('_L_'); %>
-    <article class="g-card <%= isPractice ? 'g-card--tp' : 'g-card--cours' %>" 
-             data-title="<%- item.title.toLowerCase() %>" 
-             data-desc="<%- (item.description || '').toLowerCase() %>">
-      <div class="g-card__badge"><%= isPractice ? '🧪 TP' : '📖 Cours' %></div>
-      
+    <% var isPractice = item.path.indexOf('_P_') !== -1; %>
+    <article class="g-card <%= isPractice ? 'g-card--tp' : 'g-card--cours' %>"
+             data-title="<%= item.title.toLowerCase().replace(/"/g, '&quot;') %>"
+             data-desc="<%= (item.description || '').toLowerCase().replace(/"/g, '&quot;') %>">
+      <div class="g-card__badge"><%= isPractice ? 'TP' : 'COURS' %></div>
+
       <h3 class="g-card__title"><%- item.title %></h3>
       <% if (item.subtitle) { %>
         <p class="g-card__subtitle"><%- item.subtitle %></p>
@@ -21,16 +20,13 @@
       <% if (item.description) { %>
         <p class="g-card__desc"><%- item.description %></p>
       <% } %>
-      
+
       <div class="g-card__meta">
-        <% if (item['reading-time']) { %>
-          <span class="g-card__time">≈ <%- item['reading-time'] %></span>
-        <% } %>
         <% if (item.date) { %>
           <time><%- item.date %></time>
         <% } %>
       </div>
-      
+
       <div class="g-card__actions">
         <% if (item.provide_notes !== false) { %>
           <a href="<%= item.path.replace('.qmd', '.html') %>" class="g-btn g-btn--notes">
@@ -43,45 +39,44 @@
           </a>
         <% } %>
       </div>
-      
-      <% if (items.indexOf(item) < items.length - 1) { %>
-        <% const next = items[items.indexOf(item) + 1]; %>
-        <a href="<%= next.path.replace('.qmd', '.html') %>" class="g-card__next" title="Suivant: <%- next.title %>">
-          →
-        </a>
+
+      <% if (idx < items.length - 1) { %>
+        <% var nextItem = items[idx + 1]; %>
+        <a href="<%= nextItem.path.replace('.qmd', '.html') %>" class="g-card__next" title="Suivant">&rarr;</a>
       <% } %>
     </article>
-    <% prevPath = item.path; %>
+    <% idx++; %>
   <% } %>
 </div>
 
 <% if (items.length === 0) { %>
 <div class="gallery-empty">
-  <p>Aucun contenu trouvé.</p>
+  <p>Aucun contenu trouve.</p>
 </div>
 <% } %>
 
 <script>
 (function() {
-  const input = document.querySelector('.gallery-search');
-  const cards = document.querySelectorAll('.g-card');
-  const count = document.getElementById('gallery-count');
-  
-  if (count) count.textContent = cards.length + ' ' + (cards.length > 1 ? 'items' : 'item');
-  
-  if (!input) return;
-  
+  var input = document.querySelector('.gallery-search');
+  var cards = document.querySelectorAll('.g-card');
+  var count = document.getElementById('gallery-count');
+
+  if (count) { count.textContent = cards.length + (cards.length > 1 ? ' items' : ' item'); }
+
+  if (!input) { return; }
+
   input.addEventListener('input', function() {
-    const q = this.value.toLowerCase().trim();
-    let visible = 0;
-    cards.forEach(function(card) {
-      const title = card.dataset.title || '';
-      const desc = card.dataset.desc || '';
-      const match = !q || title.includes(q) || desc.includes(q);
+    var q = this.value.toLowerCase().trim();
+    var visible = 0;
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      var title = card.getAttribute('data-title') || '';
+      var desc = card.getAttribute('data-desc') || '';
+      var match = (!q || title.indexOf(q) !== -1 || desc.indexOf(q) !== -1);
       card.style.display = match ? '' : 'none';
-      if (match) visible++;
-    });
-    if (count) count.textContent = visible + ' ' + (visible > 1 ? 'items' : 'item');
+      if (match) { visible++; }
+    }
+    if (count) { count.textContent = visible + (visible > 1 ? ' items' : ' item'); }
   });
 })();
 </script>

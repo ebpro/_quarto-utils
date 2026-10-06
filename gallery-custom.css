@@ -132,11 +132,12 @@
   position: absolute;
   top: 1rem;
   right: 1rem;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   padding: 0.25rem 0.625rem;
   border-radius: 999px;
-  letter-spacing: 0.025em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .g-card--cours .g-card__badge {
