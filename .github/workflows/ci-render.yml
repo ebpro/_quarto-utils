@@ -1,20 +1,35 @@
-# TEMPLATE for consuming repos (lectures/samples).
-# Copy this file to <your-repo>/.github/workflows/ci-render.yml and add your
-# push/pull_request triggers there. Kept dispatch-only here so the utils repo
-# itself does not run a render on every push (it has no Quarto project).
-name: Render Quarto (calls shared workflow)
+# TEMPLATE for consuming repos (lectures/samples/notebooks).
+# Copy this file to <your-repo>/.github/workflows/ci-render.yml.
+#
+# Deployment model:
+#   push to main     → GitHub Pages (stable)
+#   push to develop  → Cloudflare Pages preview (branch: develop)
+#   push to any other branch → Cloudflare Pages preview (branch: <name>)
+#   PR to any branch → render for CI validation only (no deploy)
+#
+# Requires org secrets (visible to all):
+#   EBPRO_CI_PAT  — fine-grained PAT for cross-repo checkout
+#   CF_API_TOKEN  — Cloudflare API token (Pages:Edit)
+
+name: CI Render
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
 
 jobs:
-  call-shared-render:
-    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.0.4
+  render:
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.3.10
+    secrets: inherit
     with:
-      profiles: 'notes,slides'
-      quarto-image: 'ghcr.io/ebpro/solen:quarto-full-chore-add-pyproject'
-      utils-repo: 'ebpro/_quarto-utils'
-      utils-ref: 'v1.0.4'
-      output-path: '_output'
-    secrets:
-      EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
+      utils-ref: develop
+      quarto-image: "ghcr.io/ebpro/jupyter-base:quarto-full-fix-chromium-ci-headless-render"
+      profiles: "notes,slides"
+      deploy-pages: true
+      deploy-cloudflare: true
+      # cf-project-name: "your-repo-name"  # Optional: override auto-derived name
+      enable-docker: false
