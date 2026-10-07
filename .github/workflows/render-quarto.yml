@@ -293,13 +293,31 @@ jobs:
 
           echo "Deploying to Cloudflare Pages project: $PROJECT (branch: $BRANCH)"
 
-          # Ensure the CF Pages project exists (idempotent). `wrangler pages project
-          # create` exits non-zero if the project already exists; we swallow that so
-          # the FIRST deploy auto-creates the project while re-deploys to an existing
-          # one still succeed. The account is auto-detected from CLOUDFLARE_API_TOKEN
-          # (same as the `pages deploy` below), so no CLOUDFLARE_ACCOUNT_ID is needed.
-          npx --yes wrangler@4.146.0 pages project create "$PROJECT" --production-branch=develop \
-            || echo "::notice::CF Pages project '$PROJECT' likely already exists; continuing"
+          # Ensure the CF Pages project exists (idempotent, silent on re-deploys).
+          # The project is checked via the CF API first so `wrangler pages project
+          # create` (which hard-fails with 8000002 when the project already exists)
+          # only runs on the FIRST deploy. The account is resolved from
+          # CLOUDFLARE_API_TOKEN the same way wrangler auto-detects it, so no
+          # CLOUDFLARE_ACCOUNT_ID is needed.
+          ACCOUNT_ID="$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            https://api.cloudflare.com/client/v4/accounts \
+            | python3 -c 'import sys, json; print(json.load(sys.stdin)["result"][0]["id"])')"
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo "::error::Could not resolve Cloudflare account from CLOUDFLARE_API_TOKEN"
+            exit 1
+          fi
+          CF_PROJECT_STATUS="$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/$PROJECT")"
+          if [ "$CF_PROJECT_STATUS" = "200" ]; then
+            echo "CF Pages project '$PROJECT' already exists; skipping creation"
+          elif [ "$CF_PROJECT_STATUS" = "404" ]; then
+            echo "CF Pages project '$PROJECT' not found; creating it"
+            npx --yes wrangler@4.146.0 pages project create "$PROJECT" --production-branch=develop
+          else
+            echo "::error::Unexpected HTTP $CF_PROJECT_STATUS while checking CF Pages project '$PROJECT'"
+            exit 1
+          fi
 
           # Deploy using wrangler
           npx --yes wrangler@4.146.0 pages deploy ./site \
