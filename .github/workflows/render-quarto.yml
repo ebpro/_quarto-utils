@@ -106,6 +106,17 @@ jobs:
           echo "ts=$(date -u +%Y%m%dT%H%M%SZ) run=${{ github.run_id }}" > /tmp/quarto-cache-canary/marker.txt
           cat /tmp/quarto-cache-canary/marker.txt
 
+      - name: Detect Docker socket
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            SOCKET_GID=$(stat -c %g /var/run/docker.sock 2>/dev/null || stat -f %g /var/run/docker.sock 2>/dev/null)
+            echo "DOCKER_MOUNTS=-v /var/run/docker.sock:/var/run/docker.sock --group-add ${SOCKET_GID:-0}" >> "$GITHUB_ENV"
+            echo "✅ Docker socket detected (gid=${SOCKET_GID}) — container will have Docker access"
+          else
+            echo "DOCKER_MOUNTS=" >> "$GITHUB_ENV"
+            echo "ℹ️ No Docker socket — rendering without Docker access"
+          fi
+
       - name: Render with Quarto (Docker)
         timeout-minutes: 60
         env:
@@ -126,7 +137,10 @@ jobs:
           DOCKER_ARGS+=(-e EXAMPLES_DIR=/home/jovyan/work)
           DOCKER_ARGS+=(-e CI=true)
           if [ "$ENABLE_DOCKER" = "true" ]; then
-            DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
+            # Skip socket mount in DOCKER_ARGS when DOCKER_MOUNTS (auto-detect step) already provides it
+            if [ -z "${DOCKER_MOUNTS:-}" ]; then
+              DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
+            fi
             DOCKER_ARGS+=(-e DOCKER_HOST=unix:///var/run/docker.sock)
             DOCKER_ARGS+=(--add-host dind:host-gateway)
           fi
@@ -164,7 +178,7 @@ jobs:
           # a no-op after the first.
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
-            docker run --rm --name "$RENDER_CONTAINER" \
+            docker run --rm $DOCKER_MOUNTS --name "$RENDER_CONTAINER" \
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "${DOCKER_ARGS[@]}" \
