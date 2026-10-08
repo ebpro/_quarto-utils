@@ -128,21 +128,28 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           RENDER_CONTAINER="quarto-render-${RUN_ID}"
-          # dooD: extra docker-run args, appended ONLY when enabled. With
-          # enable-docker=false DOCKER_ARGS stays empty, so the docker run below
-          # executes byte-identical to v1.3.2 (no socket mount, no DOCKER_HOST env).
+          # Extra docker-run args. The base env and the 'dind' host mapping are
+          # UNCONDITIONAL; only the docker-socket (dooD) bits are appended when
+          # enable-docker=true. With enable-docker=false the run stays free of any
+          # socket mount / DOCKER_HOST env (as before dooD existed).
           DOCKER_ARGS=()
           # Unconditional: aligns gitpull.sh / get_src_dir.sh examples base path
           # so `cd` into the cloned examples works in both dooD and non-dooD renders.
           DOCKER_ARGS+=(-e EXAMPLES_DIR=/home/jovyan/work)
           DOCKER_ARGS+=(-e CI=true)
+          # Unconditional: map 'dind' -> host-gateway so the render container can
+          # resolve services that run on the runner host (e.g. a postgres started
+          # with --network host). Reaching a host service only needs this hosts
+          # entry, which is independent of dooD (docker socket mount) — it must
+          # apply even when enable-docker=false, otherwise the JVM gets
+          # UnknownHostException: dind.
+          DOCKER_ARGS+=(--add-host dind:host-gateway)
           if [ "$ENABLE_DOCKER" = "true" ]; then
             # Skip socket mount in DOCKER_ARGS when DOCKER_MOUNTS (auto-detect step) already provides it
             if [ -z "${DOCKER_MOUNTS:-}" ]; then
               DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
             fi
             DOCKER_ARGS+=(-e DOCKER_HOST=unix:///var/run/docker.sock)
-            DOCKER_ARGS+=(--add-host dind:host-gateway)
           fi
           # Keep the existing render-container removal, plus a best-effort sweep of
           # any lecture containers this run left behind (label=ebpro-render=true).
