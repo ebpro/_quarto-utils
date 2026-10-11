@@ -42,6 +42,11 @@ on:
         required: false
         type: boolean
         default: true
+      deploy-static:
+        description: 'DORMANT: déploiement vers le serveur personnel via rsync (opt-in par wrapper)'
+        required: false
+        type: boolean
+        default: false
       cf-project-name:
         description: 'Cloudflare Pages project name (default: derive from repo name)'
         required: false
@@ -126,6 +131,8 @@ jobs:
           EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
           ENABLE_DOCKER: ${{ inputs.enable-docker }}
           RUN_ID: ${{ github.run_id }}
+          DEPLOY_STATIC: ${{ inputs.deploy-static }}
+          TEACHING_BASE_URL: ${{ secrets.TEACHING_BASE_URL }}
         run: |
           RENDER_CONTAINER="quarto-render-${RUN_ID}"
           # Extra docker-run args. The base env and the 'dind' host mapping are
@@ -175,6 +182,51 @@ jobs:
               exit 1
             fi
           fi
+          # --- DORMANT deploy-static: injection de baseurl ------------------------
+          # Quand le wrapper opte (deploy-static=true), on calcule un baseurl ancré
+          # sur l'emplacement par dépôt / par branche du serveur personnel et on
+          # l'ajoute à la commande de rendu quarto. Quand deploy-static n'est pas
+          # "true" (la valeur par défaut), BASEURL_ARG reste vide et la commande
+          # quarto est inchangée byte pour byte.
+          BASEURL_ARG=""
+          if [ "$DEPLOY_STATIC" = "true" ]; then
+            if [ -z "$TEACHING_BASE_URL" ]; then
+              echo "::error::deploy-static=true mais le secret d'org TEACHING_BASE_URL est vide; impossible de calculer baseurl"
+              exit 1
+            fi
+            # BASEPATH = TEACHING_BASE_URL sans scheme://host (ex. /teaching-material)
+            BASEPATH="$(printf '%s' "$TEACHING_BASE_URL" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+##; s#/$##')"
+            # REPO = nom court du dépôt (owner/repo -> repo)
+            REPO="$(basename "$GITHUB_REPOSITORY")"
+            # SUBPATH depuis GITHUB_REF :
+            #   refs/heads/develop   -> develop
+            #   refs/heads/<branche> -> <branche> (les barres internes restent des répertoires imbriqués)
+            #   refs/tags/<tag>      -> releases/<tag>
+            #   autre                -> erreur
+            case "$GITHUB_REF" in
+              refs/heads/develop)
+                SUBPATH="develop"
+                ;;
+              refs/heads/*)
+                SUBPATH="${GITHUB_REF#refs/heads/}"
+                ;;
+              refs/tags/*)
+                SUBPATH="releases/${GITHUB_REF#refs/tags/}"
+                ;;
+              *)
+                echo "::error::deploy-static=true mais GITHUB_REF '$GITHUB_REF' n'est ni une branche ni un tag; rendu avec baseurl refusé"
+                exit 1
+                ;;
+            esac
+            if [ -z "$SUBPATH" ]; then
+              echo "::error::SUBPATH vide pour GITHUB_REF '$GITHUB_REF'; rendu avec baseurl refusé"
+              exit 1
+            fi
+            BASEURL="${BASEPATH}/${REPO}/${SUBPATH}/"
+            echo "ℹ️  deploy-static: BASEURL=$BASEURL"
+            BASEURL_ARG=" --metadata baseurl=$BASEURL"
+          fi
+          # -----------------------------------------------------------------------
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
@@ -183,7 +235,7 @@ jobs:
               -w /workdir \
               "${DOCKER_ARGS[@]}" \
               "$QUARTO_IMAGE" \
-              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'"
+              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'$BASEURL_ARG"
           done
 
       - name: Package rendered output
@@ -343,3 +395,124 @@ jobs:
           echo ""
           echo "🔍 Preview deployment complete for branch: $BRANCH"
           echo "   URL will be printed above by wrangler (format: https://<hash>--$PROJECT.pages.dev)"
+
+  deploy-static:
+    needs: render
+    if: inputs.deploy-static && github.event_name == 'push'
+    timeout-minutes: 15
+    runs-on: [self-hosted, linux, ebpro-org, x64]
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: site-zip
+          path: site-zip
+
+      - name: Unpack site
+        run: |
+          mkdir -p site
+          cd site-zip
+          unzip -o site-zip.zip -d ../site
+          FILE_COUNT=$(find ../site -type f | wc -l)
+          echo "Site prêt : $FILE_COUNT fichiers"
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "::error::site/ contient 0 fichier après unzip — déploiement d'un site vide refusé"
+            exit 1
+          fi
+
+      - name: Compute target path (REPO + SUBPATH)
+        run: |
+          REPO="$(basename "$GITHUB_REPOSITORY")"
+          # MÊME règle de SUBPATH que l'injection de baseurl dans le job render.
+          case "$GITHUB_REF" in
+            refs/heads/develop)
+              SUBPATH="develop"
+              ;;
+            refs/heads/*)
+              SUBPATH="${GITHUB_REF#refs/heads/}"
+              ;;
+            refs/tags/*)
+              SUBPATH="releases/${GITHUB_REF#refs/tags/}"
+              ;;
+            *)
+              echo "::error::GITHUB_REF '$GITHUB_REF' n'est ni une branche ni un tag; déploiement refusé"
+              exit 1
+              ;;
+          esac
+          if [ -z "$REPO" ] || [ -z "$SUBPATH" ]; then
+            echo "::error::REPO ou SUBPATH vide (REPO='$REPO' SUBPATH='$SUBPATH'); déploiement refusé"
+            exit 1
+          fi
+          # SÉCURITÉ (règle n°1 — aucune suppression accidentelle) : la portée de
+          # --delete DOIT être exactement teaching-material/$REPO/$SUBPATH/. On refuse
+          # si le chemin de destination n'a pas au moins 3 composants (teaching-material
+          # / REPO / SUBPATH). Jamais teaching-material/ seul, jamais teaching-material/$REPO/.
+          DEST_PATH="teaching-material/$REPO/$SUBPATH"
+          COMPONENT_COUNT="$(printf '%s' "$DEST_PATH" | awk -F'/' '{n=0; for(i=1;i<=NF;i++) if($i!="") n++; print n}')"
+          if [ "$COMPONENT_COUNT" -lt 3 ]; then
+            echo "::error::Vérification de sécurité échouée : '$DEST_PATH' a moins de 3 composants (teaching-material/REPO/SUBPATH) ; rsync --delete refusé"
+            exit 1
+          fi
+          echo "REPO=$REPO" >> "$GITHUB_ENV"
+          echo "SUBPATH=$SUBPATH" >> "$GITHUB_ENV"
+          echo "Cible de déploiement : bruno@vai.univ-tln.fr:teaching-material/$REPO/$SUBPATH/"
+
+      - name: Write SSH key
+        env:
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$TEACHING_DEPLOY_SSH_KEY" ]; then
+            echo "::error::Le secret TEACHING_DEPLOY_SSH_KEY n'est pas défini ou n'est pas visible par ce dépôt ; déploiement impossible"
+            exit 1
+          fi
+          KEY="$(mktemp /tmp/teaching-deploy-key.XXXXXX)"
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          echo "KEY=$KEY" >> "$GITHUB_ENV"
+
+      - name: rsync to personal server (scoped --delete)
+        run: |
+          # Re-vérification de sécurité juste avant le rsync destructif.
+          if [ -z "$SUBPATH" ]; then
+            echo "::error::Vérification de sécurité échouée : SUBPATH vide ; rsync --delete refusé"
+            exit 1
+          fi
+          DEST="teaching-material/$REPO/$SUBPATH/"
+          echo "Portée de rsync --delete : bruno@vai.univ-tln.fr:$DEST"
+          rsync -az --delete -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" site/ "bruno@vai.univ-tln.fr:$DEST"
+          echo "✅ rsync terminé : bruno@vai.univ-tln.fr:$DEST"
+
+      - name: Write root placeholder index.html
+        run: |
+          DEST_DIR="teaching-material/$REPO"
+          # Écrasement d'UN SEUL fichier à la racine du dépôt (SANS --delete, SANS sync de répertoire).
+          ssh -i "$KEY" -o StrictHostKeyChecking=accept-new bruno@vai.univ-tln.fr "mkdir -p $DEST_DIR && cat > $DEST_DIR/index.html" <<'INDEX_HTML_EOF'
+          <!DOCTYPE html>
+          <html lang="fr">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Aucune version stable publique</title>
+          <style>
+          body { font-family: system-ui, -apple-system, sans-serif; margin: 4rem auto; max-width: 40rem; padding: 0 1rem; color: #1f2328; }
+          h1 { font-size: 1.5rem; }
+          a { color: #0969da; }
+          </style>
+          </head>
+          <body>
+          <h1>Aucune version stable publique</h1>
+          <p>Aucune version de ce dépôt n'est déployée au niveau racine. Consultez une branche pour voir un rendu :</p>
+          <ul>
+          <li><a href="develop/">develop</a></li>
+          </ul>
+          </body>
+          </html>
+          INDEX_HTML_EOF
+          echo "✅ Placeholder écrit : bruno@vai.univ-tln.fr:$DEST_DIR/index.html"
+
+      - name: Clean up SSH key
+        if: always()
+        run: |
+          if [ -n "${KEY:-}" ]; then
+            rm -f "$KEY"
+          fi
