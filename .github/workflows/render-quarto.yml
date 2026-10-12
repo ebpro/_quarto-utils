@@ -501,7 +501,7 @@ jobs:
           fi
           DEST="teaching-material/$REPO/$SUBPATH/"
           echo "Portée de rsync --delete : bruno@vai.univ-tln.fr:$DEST"
-          rsync -az --delete -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" site/ "bruno@vai.univ-tln.fr:$DEST"
+          rsync -az --delete --mkpath -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" site/ "bruno@vai.univ-tln.fr:$DEST"
           echo "✅ rsync terminé : bruno@vai.univ-tln.fr:$DEST"
 
       - name: Write root placeholder index.html
