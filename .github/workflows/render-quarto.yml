@@ -538,3 +538,29 @@ jobs:
           if [ -n "${KEY:-}" ]; then
             rm -f "$KEY"
           fi
+
+  trigger-catalog:
+    needs: [render]
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch teaching-catalog rebuild
+        env:
+          GH_TOKEN: ${{ secrets.CATALOG_DISPATCH_TOKEN }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::CATALOG_DISPATCH_TOKEN not set; skipping catalog trigger."
+            exit 0
+          fi
+          code=$(curl -s -o /tmp/catalog_dispatch.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/ebpro/teaching-catalog/actions/workflows/catalog.yml/dispatches" \
+            -d '{"ref":"main"}')
+          echo "catalog dispatch -> HTTP ${code}: $(cat /tmp/catalog_dispatch.json 2>/dev/null || true)"
+          if [ "${code}" != "204" ]; then
+            echo "::warning::catalog dispatch did not return 204 (got ${code}); check CATALOG_DISPATCH_TOKEN has Actions:write on ebpro/teaching-catalog."
+          fi
