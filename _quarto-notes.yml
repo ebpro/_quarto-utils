@@ -29,7 +29,7 @@ format:
     font-family: "Linux Libertine"
     font-size: 12pt
     color: "#333366"
-    header: "Titre du document"
+    header: !env [QUARTO_NOTES_HEADER, "Titre du document"]
     footer: "Page {page}"
 
   html:

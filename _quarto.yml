@@ -17,9 +17,7 @@ date: last-modified
 date-format: iso
 license: "CC BY-NC"
 
-language: 
-  title-block-author-single: "Auteur"
-lang: fr
+lang: !env [QUARTO_LANG, fr]
 
 execute:
   echo: false
