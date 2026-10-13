@@ -23,13 +23,14 @@ on:
 
 jobs:
   render:
-    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.3.10
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.3.18
     secrets: inherit
     with:
       utils-ref: develop
-      quarto-image: "ghcr.io/ebpro/jupyter-base:quarto-full-fix-chromium-ci-headless-render"
+      quarto-image: "ghcr.io/ebpro/solen:quarto-full-build-20261010T172146Z"
       profiles: "notes,slides"
-      deploy-pages: true
-      deploy-cloudflare: true
+      deploy-pages: false
+      deploy-cloudflare: false
+      deploy-static: true
       # cf-project-name: "your-repo-name"  # Optional: override auto-derived name
       enable-docker: false
