@@ -248,25 +248,163 @@ jobs:
         # deploy-static rsync (whole unpacked site) with zero changes to them.
         # Slides profile output dir: _output/_slides (_quarto-slides.yml
         # `output-dir: _output/_slides`), decks nested by lesson dir as *_L_*.html.
+        #
+        # Environment split discovered on canary run #37: this step executes on
+        # the RUNNER HOST (bash --noprofile --norc -e -o pipefail), while node/
+        # npx and the quarto-baked chromium live INSIDE the solen image that the
+        # render step used (/home/jovyan/.local/share/quarto/chromium*). The
+        # host-side `ls` of that path therefore hard-failed the step under -e.
+        # Fix: run the whole export INSIDE the (locally cached) quarto image when
+        # it provides npx, mounting the site output dir; keep a host-side
+        # fallback only for images without npx. Diagnostics are never fatal.
         if: inputs.slides-pdf
         continue-on-error: true
         env:
           # Resolved via `npm view decktape version` on 2026-10-13.
           DECKTAPE_VERSION: "3.16.1"
+          QUARTO_IMAGE: ${{ inputs.quarto-image }}
           SITE_OUT: ${{ github.workspace }}/${{ inputs.output-path }}
           SLIDES_OUT: ${{ github.workspace }}/${{ inputs.output-path }}/_slides
         run: |
-          set -uo pipefail
+          # Diagnostics must never abort the step: the Actions default shell
+          # runs with -e, so disable it explicitly for the probe phase.
+          set +e
 
-          echo ">> Diagnostics (always echoed):"
-          ls /home/jovyan/.local/share/quarto/ 2>/dev/null
-          command -v chromium chromium-browser google-chrome 2>/dev/null || true
+          echo ">> Host diagnostics (non-fatal):"
+          for b in node npm npx python3 docker; do
+            printf '   host %-8s -> %s\n' "$b" "$(command -v "$b" 2>/dev/null || echo MISSING)"
+          done
+          echo "   host chromium probes:"
+          command -v chromium chromium-browser google-chrome 2>/dev/null
+          ls "$HOME/.local/share/quarto" 2>/dev/null || true
+          ls /home/jovyan/.local/share/quarto 2>/dev/null || true
+          echo "   cached solen images on this runner:"
+          docker images 2>/dev/null | grep -i solen || true
 
           if [ ! -d "$SLIDES_OUT" ]; then
             echo "::warning::Slides output dir not found: $SLIDES_OUT (slides profile did not render?); skipping decktape export"
             exit 0
           fi
 
+          # Probe the render image itself for node/npx (it is locally cached from
+          # the render step; no pull should be needed). Login-shell probe so
+          # PATH contributions from /etc/profile or nvm-style rc files count.
+          echo ">> Probing $QUARTO_IMAGE for node/npx:"
+          IMAGE_HAS_NPX=0
+          if docker run --rm "$QUARTO_IMAGE" bash -lc 'command -v npx && command -v node'; then
+            IMAGE_HAS_NPX=1
+            echo ">> npx available inside the quarto image -> exporting decks in-container"
+          else
+            echo ">> npx NOT available inside the quarto image -> host fallback path"
+          fi
+
+          if [ "$IMAGE_HAS_NPX" = "1" ]; then
+            # --- Container path -------------------------------------------------
+            # The export script runs inside the quarto image with the site output
+            # dir mounted at /site. The image provides npx AND the quarto-baked
+            # chromium under /home/jovyan/.local/share/quarto/chromium*/. PDFs
+            # are written to /site/pdf/<rel>.pdf (= $SITE_OUT/pdf/), which rides
+            # the existing zip artifact and rsync unchanged.
+            EXPORT_SCRIPT="$(mktemp /tmp/decktape-export.XXXXXX.sh)"
+            # NOTE: heredoc body and terminator sit at column 0 of the generated
+            # script (YAML block-scalar base indent) so bash terminates it.
+            cat > "$EXPORT_SCRIPT" <<'DECKTAPE_EXPORT_EOF'
+          #!/usr/bin/env bash
+          set -uo pipefail
+
+          echo ">> Container diagnostics (non-fatal):"
+          for b in node npm npx python3; do
+            printf '   image %-8s -> %s\n' "$b" "$(command -v "$b" 2>/dev/null || echo MISSING)"
+          done
+
+          cd /site/_slides || exit 1
+          shopt -s globstar nullglob
+          decks=(**/*_L_*.html)
+          if [ "${#decks[@]}" -eq 0 ]; then
+            echo "::warning::No *_L_*.html decks found under /site/_slides; nothing to export"
+            exit 0
+          fi
+
+          # Chromium discovery: quarto-baked chromium first (guaranteed inside
+          # the image), then PATH browsers.
+          CHROME=""
+          for base in /home/jovyan /root "$HOME"; do
+            for candidate in "$base"/.local/share/quarto/chromium*/chrome-linux*/chrome; do
+              if [ -x "$candidate" ]; then CHROME="$candidate"; break 2; fi
+            done
+          done
+          if [ -z "$CHROME" ]; then
+            CHROME="$(command -v chromium chromium-browser google-chrome 2>/dev/null | head -n1)"
+          fi
+          if [ -z "$CHROME" ]; then
+            echo "::error::No chromium found inside the quarto image (checked /home/jovyan, /root, \$HOME under .local/share/quarto/chromium*/ and PATH)"
+            exit 1
+          fi
+          echo ">> Using container chrome: $CHROME"
+
+          # Serve the slides tree locally inside the container network namespace.
+          if command -v python3 >/dev/null 2>&1; then
+            python3 -m http.server 8080 --directory /site/_slides >/dev/null 2>&1 &
+          elif command -v npx >/dev/null 2>&1; then
+            npx -y http-server -p 8080 /site/_slides >/dev/null 2>&1 &
+          else
+            echo "::error::Neither python3 nor npx available inside the container to serve the slides output"
+            exit 1
+          fi
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          if command -v curl >/dev/null 2>&1; then
+            ready=0
+            for _ in $(seq 1 20); do
+              if curl -sf -o /dev/null "http://127.0.0.1:8080/"; then ready=1; break; fi
+              sleep 0.5
+            done
+            if [ "$ready" -ne 1 ]; then echo "::error::In-container static server did not come up on 8080"; exit 1; fi
+          else
+            sleep 3
+          fi
+
+          echo ">> Exporting ${#decks[@]} deck(s) to /site/pdf/ (in-container)"
+          failures=0
+          for deck in "${decks[@]}"; do
+            rel="${deck#./}"
+            url_rel=$(printf '%s' "$rel" | sed 's/ /%20/g')
+            out="/site/pdf/${rel%.html}.pdf"
+            mkdir -p "$(dirname "$out")"
+            echo ">> decktape: $rel -> pdf/${rel%.html}.pdf"
+            if ! npx -y "decktape@${DECKTAPE_VERSION}" reveal \
+                --chrome-path "$CHROME" \
+                --chrome-arg=--no-sandbox \
+                --chrome-arg=--disable-gpu \
+                --pause 3000 \
+                "http://127.0.0.1:8080/${url_rel}" "$out"; then
+              echo "::warning::decktape failed for $rel (continuing; step is warn-only)"
+              failures=$((failures + 1))
+            fi
+          done
+          if [ "$failures" -gt 0 ]; then
+            echo "::warning::$failures/${#decks[@]} deck(s) failed to export (container path)"
+          else
+            echo "✅ All ${#decks[@]} deck(s) exported under /pdf/ of the site output (container path)"
+          fi
+          DECKTAPE_EXPORT_EOF
+
+            # Login shell (-l) so the image's node PATH setup applies to the
+            # script too; DECKTAPE_VERSION forwarded via -e.
+            docker run --rm \
+              -v "$SITE_OUT:/site:Z" \
+              -v "$EXPORT_SCRIPT:/tmp/decktape-export.sh:ro" \
+              -w /site \
+              -e DECKTAPE_VERSION \
+              "$QUARTO_IMAGE" \
+              bash -l /tmp/decktape-export.sh
+            rc=$?
+            rm -f "$EXPORT_SCRIPT"
+            exit $rc
+          fi
+
+          # --- Host fallback (image lacks npx) ----------------------------------
           # Chromium discovery: quarto-managed chromium first, then PATH browsers.
           CHROME=""
           for candidate in /home/jovyan/.local/share/quarto/chromium*/chrome-linux*/chrome; do
@@ -276,22 +414,24 @@ jobs:
             CHROME=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
           fi
           if [ -z "$CHROME" ]; then
-            echo "::error::No chromium found (checked /home/jovyan/.local/share/quarto/chromium*/ and PATH for chromium/chromium-browser/google-chrome); cannot run decktape"
+            echo "::error::Host fallback: no chromium found on the runner host (checked /home/jovyan/.local/share/quarto/chromium*/ and PATH for chromium/chromium-browser/google-chrome); cannot run decktape"
             exit 1
           fi
-          echo ">> Using chrome: $CHROME"
+          echo ">> Host fallback chrome: $CHROME"
 
-          # Serve the slides output tree locally (python3 preferred, http-server fallback).
+          if ! command -v npx >/dev/null 2>&1; then
+            echo "::error::Host fallback: neither the quarto image nor the runner host provides npx; cannot run decktape"
+            exit 1
+          fi
+
+          # Serve the slides output tree locally (python3 preferred).
           SERVER_PID=""
           if command -v python3 >/dev/null 2>&1; then
             python3 -m http.server 8080 --directory "$SLIDES_OUT" >/dev/null 2>&1 &
             SERVER_PID=$!
-          elif command -v npx >/dev/null 2>&1; then
+          else
             npx -y http-server -p 8080 "$SLIDES_OUT" >/dev/null 2>&1 &
             SERVER_PID=$!
-          else
-            echo "::error::Neither python3 nor npx available to serve the slides output"
-            exit 1
           fi
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
@@ -315,7 +455,7 @@ jobs:
             echo "::warning::No *_L_*.html decks found under $SLIDES_OUT; nothing to export"
             exit 0
           fi
-          echo ">> Exporting ${#decks[@]} deck(s) to $SITE_OUT/pdf/"
+          echo ">> Exporting ${#decks[@]} deck(s) to $SITE_OUT/pdf/ (host fallback)"
           failures=0
           for deck in "${decks[@]}"; do
             rel="${deck#./}"
@@ -334,9 +474,9 @@ jobs:
             fi
           done
           if [ "$failures" -gt 0 ]; then
-            echo "::warning::$failures/$((${#decks[@]})) deck(s) failed to export"
+            echo "::warning::$failures/${#decks[@]} deck(s) failed to export (host fallback)"
           else
-            echo "✅ All ${#decks[@]} deck(s) exported under /pdf/ of the site output"
+            echo "✅ All ${#decks[@]} deck(s) exported under /pdf/ of the site output (host fallback)"
           fi
 
       - name: Package rendered output
