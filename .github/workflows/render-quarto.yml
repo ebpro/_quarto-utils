@@ -73,11 +73,15 @@ concurrency:
 
 jobs:
   render:
-    # Job ceiling = render step cap + 30 min of headroom for checkout/cache/
-    # packaging/upload steps. Default input 60 -> 90, identical to the
-    # previous hardcoded job timeout. Without this linkage, a wrapper asking
-    # for >60 render minutes would silently stay capped by the job timer.
-    timeout-minutes: ${{ inputs.render-timeout-minutes + 30 }}
+    # Job ceiling is a FIXED literal 120 = worst-supported render cap (90)
+    # + 30 min headroom for checkout/cache/packaging/upload steps.
+    # Deliberately NOT an expression: the Actions service historically rejects
+    # the `inputs` context in job-level timeout-minutes of reusable workflows
+    # (actions/runner#1555), failing the run at preparation time with 0 jobs.
+    # The render cap itself is governed per-wrapper via the step-level
+    # `render-timeout-minutes` input below; the job timer is only the outer
+    # safety net. Wrappers must keep render-timeout-minutes <= 90.
+    timeout-minutes: 120
     runs-on: [self-hosted, linux, ebpro-org, x64]
     permissions:
       contents: read
@@ -136,7 +140,10 @@ jobs:
           fi
 
       - name: Render with Quarto (Docker)
-        timeout-minutes: ${{ inputs.render-timeout-minutes }}
+        # fromJSON() coercion guards against the caller→callee boundary
+        # delivering the number input as a string ("Unexpected value '90'"
+        # evaluation errors, actions/runner#1555 discussion).
+        timeout-minutes: ${{ fromJSON(inputs.render-timeout-minutes) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
