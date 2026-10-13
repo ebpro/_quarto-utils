@@ -61,6 +61,11 @@ on:
         description: "Export revealjs decks to PDF via decktape (warn-only)"
         type: boolean
         default: false
+      render-timeout-minutes:
+        description: 'Hard cap (minutes) on the "Render with Quarto (Docker)" step. Default 60 = previous behaviour. Raise per-wrapper only for known-slow content (e.g. DEV-ADV 90).'
+        required: false
+        type: number
+        default: 60
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
@@ -68,7 +73,11 @@ concurrency:
 
 jobs:
   render:
-    timeout-minutes: 90
+    # Job ceiling = render step cap + 30 min of headroom for checkout/cache/
+    # packaging/upload steps. Default input 60 -> 90, identical to the
+    # previous hardcoded job timeout. Without this linkage, a wrapper asking
+    # for >60 render minutes would silently stay capped by the job timer.
+    timeout-minutes: ${{ inputs.render-timeout-minutes + 30 }}
     runs-on: [self-hosted, linux, ebpro-org, x64]
     permissions:
       contents: read
@@ -127,7 +136,7 @@ jobs:
           fi
 
       - name: Render with Quarto (Docker)
-        timeout-minutes: 60
+        timeout-minutes: ${{ inputs.render-timeout-minutes }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
