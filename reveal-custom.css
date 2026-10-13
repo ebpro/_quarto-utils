@@ -1,6 +1,13 @@
 /* Reveal slides custom CSS
-   Imports the shared output highlight styles and adds slide-specific tweaks */
-@import "output-highlight.css";
+   Slide-specific tweaks. (The former `@import "output-highlight.css"` chain was
+   removed with v1.3.19: output-highlight.css is deleted from this module.) */
+
+/* Slide numbers: #333 for projector contrast (the clean theme shipped #777 with
+   `!important` on `.slide-number, .reveal.has-logo .slide-number`, so this rule
+   must carry `!important` too to win at equal-or-higher specificity) */
+.reveal .slide-number {
+    color: #333 !important;
+}
 
 /* On slides, make outputs slightly more compact and full-width within the slide column */
 .reveal .cell-output,

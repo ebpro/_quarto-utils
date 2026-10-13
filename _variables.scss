@@ -20,3 +20,9 @@ $figure-cta-bg-light: rgba(255, 255, 255, 0.9) !default;
 $figure-cta-color-light: #0b1220 !default;
 $figure-cta-bg-dark: rgba(0, 0, 0, 0.55) !default;
 $figure-cta-color-dark: #ffffff !default;
+
+// Output-block border tokens (see custom.scss, which inlines the same
+// `!default` values — custom.scss cannot @import this file from its
+// scss:rules section without fragility, so the two lists must stay in sync)
+$output-border-light: rgba(0, 0, 0, 0.3) !default;
+$output-border-dark: rgba(255, 255, 255, 0.18) !default;

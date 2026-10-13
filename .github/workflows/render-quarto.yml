@@ -57,6 +57,10 @@ on:
         required: false
         type: boolean
         default: false
+      slides-pdf:
+        description: "Export revealjs decks to PDF via decktape (warn-only)"
+        type: boolean
+        default: false
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
@@ -237,6 +241,103 @@ jobs:
               "$QUARTO_IMAGE" \
               bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'$BASEURL_ARG"
           done
+
+      - name: Export slides PDF (decktape)
+        # Runs BEFORE "Package rendered output": PDFs land in <output-path>/pdf/
+        # and ride the existing zip (os.walk over the whole output dir) and the
+        # deploy-static rsync (whole unpacked site) with zero changes to them.
+        # Slides profile output dir: _output/_slides (_quarto-slides.yml
+        # `output-dir: _output/_slides`), decks nested by lesson dir as *_L_*.html.
+        if: inputs.slides-pdf
+        continue-on-error: true
+        env:
+          # Resolved via `npm view decktape version` on 2026-10-13.
+          DECKTAPE_VERSION: "3.16.1"
+          SITE_OUT: ${{ github.workspace }}/${{ inputs.output-path }}
+          SLIDES_OUT: ${{ github.workspace }}/${{ inputs.output-path }}/_slides
+        run: |
+          set -uo pipefail
+
+          echo ">> Diagnostics (always echoed):"
+          ls /home/jovyan/.local/share/quarto/ 2>/dev/null
+          command -v chromium chromium-browser google-chrome 2>/dev/null || true
+
+          if [ ! -d "$SLIDES_OUT" ]; then
+            echo "::warning::Slides output dir not found: $SLIDES_OUT (slides profile did not render?); skipping decktape export"
+            exit 0
+          fi
+
+          # Chromium discovery: quarto-managed chromium first, then PATH browsers.
+          CHROME=""
+          for candidate in /home/jovyan/.local/share/quarto/chromium*/chrome-linux*/chrome; do
+            if [ -x "$candidate" ]; then CHROME="$candidate"; break; fi
+          done
+          if [ -z "$CHROME" ]; then
+            CHROME=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
+          fi
+          if [ -z "$CHROME" ]; then
+            echo "::error::No chromium found (checked /home/jovyan/.local/share/quarto/chromium*/ and PATH for chromium/chromium-browser/google-chrome); cannot run decktape"
+            exit 1
+          fi
+          echo ">> Using chrome: $CHROME"
+
+          # Serve the slides output tree locally (python3 preferred, http-server fallback).
+          SERVER_PID=""
+          if command -v python3 >/dev/null 2>&1; then
+            python3 -m http.server 8080 --directory "$SLIDES_OUT" >/dev/null 2>&1 &
+            SERVER_PID=$!
+          elif command -v npx >/dev/null 2>&1; then
+            npx -y http-server -p 8080 "$SLIDES_OUT" >/dev/null 2>&1 &
+            SERVER_PID=$!
+          else
+            echo "::error::Neither python3 nor npx available to serve the slides output"
+            exit 1
+          fi
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          # Wait for the server to accept connections (max ~10s; fixed sleep if curl absent).
+          if command -v curl >/dev/null 2>&1; then
+            ready=0
+            for _ in $(seq 1 20); do
+              if curl -sf -o /dev/null "http://127.0.0.1:8080/"; then ready=1; break; fi
+              sleep 0.5
+            done
+            if [ "$ready" -ne 1 ]; then echo "::error::Local static server did not come up on 8080"; exit 1; fi
+          else
+            sleep 3
+          fi
+
+          # Loop over every deck, preserving its relative path under pdf/.
+          cd "$SLIDES_OUT"
+          shopt -s globstar nullglob
+          decks=(**/*_L_*.html)
+          if [ "${#decks[@]}" -eq 0 ]; then
+            echo "::warning::No *_L_*.html decks found under $SLIDES_OUT; nothing to export"
+            exit 0
+          fi
+          echo ">> Exporting ${#decks[@]} deck(s) to $SITE_OUT/pdf/"
+          failures=0
+          for deck in "${decks[@]}"; do
+            rel="${deck#./}"
+            url_rel=$(printf '%s' "$rel" | sed 's/ /%20/g')
+            out="$SITE_OUT/pdf/${rel%.html}.pdf"
+            mkdir -p "$(dirname "$out")"
+            echo ">> decktape: $rel -> ${out#"$SITE_OUT"/}"
+            if ! npx -y "decktape@${DECKTAPE_VERSION}" reveal \
+                --chrome-path "$CHROME" \
+                --chrome-arg=--no-sandbox \
+                --chrome-arg=--disable-gpu \
+                --pause 3000 \
+                "http://127.0.0.1:8080/${url_rel}" "$out"; then
+              echo "::warning::decktape failed for $rel (continuing; step is warn-only)"
+              failures=$((failures + 1))
+            fi
+          done
+          if [ "$failures" -gt 0 ]; then
+            echo "::warning::$failures/$((${#decks[@]})) deck(s) failed to export"
+          else
+            echo "✅ All ${#decks[@]} deck(s) exported under /pdf/ of the site output"
+          fi
 
       - name: Package rendered output
         run: |

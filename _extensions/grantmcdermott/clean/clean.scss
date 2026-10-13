@@ -33,7 +33,10 @@ $presentation-heading-color: $jet !default;
 $presentation-heading-font-weight: lighter;
 //$presentation-heading-line-height: 2;
 //$presentation-block-margin: 28px;
-$presentation-font-size-root: 32px;
+// LOCAL PATCH — reapply after any extension re-vendor; per-course override
+// via format.clean-revealjs.scss ($presentation-font-size-root is !default).
+// Was: $presentation-font-size-root: 32px;
+$presentation-font-size-root: 36px !default;
 
 // colors
 //$body-bg: #f0f1eb !default;
