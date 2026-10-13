@@ -305,7 +305,15 @@ jobs:
             # chromium under /home/jovyan/.local/share/quarto/chromium*/. PDFs
             # are written to /site/pdf/<rel>.pdf (= $SITE_OUT/pdf/), which rides
             # the existing zip artifact and rsync unchanged.
-            EXPORT_SCRIPT="$(mktemp /tmp/decktape-export.XXXXXX.sh)"
+            # IMPORTANT (run #38 lesson): the runner is itself a container that
+            # talks to the host Docker daemon (dooD). Host-side bind sources must
+            # exist at the SAME absolute path on the host, so /tmp files are NOT
+            # shareable (Docker silently created an empty dir as the mount source
+            # -> "Is a directory", exit 126). $GITHUB_WORKSPACE is a shared path
+            # (proven by the render step's -v "$GITHUB_WORKSPACE":/workdir). Put
+            # the script at the workspace root — OUTSIDE $SITE_OUT, so it never
+            # rides the zip artifact or the rsync — and remove it after the run.
+            EXPORT_SCRIPT="${GITHUB_WORKSPACE:-$SITE_OUT/..}/.decktape-export.sh"
             # NOTE: heredoc body and terminator sit at column 0 of the generated
             # script (YAML block-scalar base indent) so bash terminates it.
             cat > "$EXPORT_SCRIPT" <<'DECKTAPE_EXPORT_EOF'
