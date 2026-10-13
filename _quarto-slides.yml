@@ -14,6 +14,11 @@ format:
     # theme: [clean, _quarto-utils/custom.scss]
 
     theme: [_quarto-utils/custom.scss]
+    # Chemin résolu depuis la racine du projet consommateur (même convention que
+    # `theme:` ci-dessus). « replace-not-merge » : un front matter qui redéfinit
+    # `css:` remplace cette liste — le préfixer avec `_quarto-utils/reveal-custom.css`.
+    css:
+      - _quarto-utils/reveal-custom.css
     highlight-style: github
     footer: "E. Bruno - {{< meta title >}}"
     slide-level: 3

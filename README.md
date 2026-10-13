@@ -24,10 +24,19 @@ Submodule partagé pour projets Quarto avec configurations, extensions et ressou
 - `snippets/` - Snippets réutilisables (bash, zsh, java)
 
 ### Styles & Templates
-- `_variables.scss` - Variables CSS partagées
-- `reveal-custom.css` - Styles pour présentations Reveal.js
+- `_variables.scss` - Variables CSS partagées (design tokens `!default`)
+- `reveal-custom.css` - Styles pour présentations Reveal.js (câblé via `css:` dans `_quarto-slides.yml`)
+- `gallery-custom.css` - Styles de galerie centralisés (câblé via `css:` dans `_quarto-notes.yml`)
 - `gallery.ejs` - Template pour galeries
 - `index-listing.yml` - Configuration de listings
+
+> ⚠️ **`css:` est « replace-not-merge »** : un front matter de page qui redéfinit
+> `format.html.css:` REMPLACE la liste du projet au lieu de la fusionner. La liste
+> centralisée de `_quarto-notes.yml` (une seule entrée,
+> `_quarto-utils/gallery-custom.css`) n'est sûre que tant que le front matter des
+> dépôts qui gardent une entrée `css:` est EXACTEMENT identique. Ne jamais retirer
+> le préfixe `_quarto-utils/` : les chemins `css:`/`theme:` sont résolus depuis la
+> racine du projet consommateur, pas depuis le répertoire du fichier de config.
 
 ## 🚀 Utilisation dans un nouveau projet (submodule + symlinks)
 
@@ -242,6 +251,47 @@ Génère des documents HTML/PDF :
 
 ```bash
 quarto render --profile notes
+```
+
+## 🖨️ Export PDF des slides
+
+Deux chemins complémentaires :
+
+1. **Manuel (enseignant)** — dans le navigateur, ouvrir le deck HTML et ajouter
+   `?print-pdf` à l'URL, puis imprimer en PDF via le navigateur. Ce mode consomme
+   `pdf-separate-fragments: true` (déjà actif dans `_quarto-slides.yml`) : chaque
+   fragment devient sa propre page imprimée. Idéal ponctuellement, contrôle humain
+   du rendu.
+2. **CI (automatique)** — le workflow mutualisé `render-quarto.yml` accepte
+   l'input `slides-pdf: true` (opt-in par wrapper) : un step *warn-only* exporte
+   chaque deck `*_L_*.html` du profil slides via
+   [decktape](https://github.com/astefanutti/decktape) (une page par slide,
+   sans fragments), en préservant l'arborescence relative sous
+   `/pdf/` du site déployé (ex. `…/<repo>/<branche>/pdf/01_x_L_y.pdf`).
+   Les PDFs voyagent avec l'artefact de site existant et le rsync
+   `deploy-static`, sans modification de ces étapes.
+
+### Taille de police des slides (override par cours)
+
+La taille racine du thème clean est maintenant surchargeable :
+`$presentation-font-size-root: 36px !default` (patch local dans
+`_extensions/grantmcdermott/clean/clean.scss` — réappliquer après tout
+re-vendor de l'extension). Un cours qui veut une police plus grande sur
+projecteur ne touche **pas** au module partagé : il fournit son propre scss
+dans le front matter :
+
+```yaml
+format:
+  clean-revealjs:
+    scss:
+      - styles/slides-font.scss   # préfixer/_re-déclarer avec le css partagé si nécessaire
+```
+
+avec, dans le fichier :
+
+```scss
+/*-- scss:defaults --*/
+$presentation-font-size-root: 40px;
 ```
 
 ## 🛠️ Scripts utilitaires

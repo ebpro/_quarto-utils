@@ -40,6 +40,17 @@ format:
       #dark:  [darkly]  
 
     toc: true
+    # CENTRALISÉ ICI : css est sémantique « replace-not-merge » (le front matter
+    # d'une page REMPLACE la liste du projet, il ne la fusionne pas). Cette liste
+    # à UNE SEULE entrée n'est sûre que tant que le front matter des dépôts qui
+    # gardent une entrée css (notebook-git, notebook-containers-intro,
+    # DEV-ADV, CNAM PO43/PM44, notebook-java-jpa, notebook-quarto-sample) est
+    # EXACTEMENT identique (même entrée unique `_quarto-utils/gallery-custom.css`).
+    # Ne pas ajouter d'entrée ici sans aligner ces front matters, et ne pas
+    # retirer le préfixe `_quarto-utils/` (chemins résolus depuis la racine du
+    # projet consommateur, cf. theme: [_quarto-utils/custom.scss] plus haut).
+    css:
+      - _quarto-utils/gallery-custom.css
     include-in-header:
       - text: |
           <script src="_quarto-utils/gallery-search.js" defer></script>

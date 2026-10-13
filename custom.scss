@@ -1,6 +1,12 @@
 /*-- scss:rules --*/
 // Labels pour input / output sur cellules de code Quarto
 
+// Tokens de bordure des blocs de sortie (miroir de _variables.scss — inlinés ici
+// pour éviter la fragilité d'un @import dans la section scss:rules; `!default`
+// permet une redéfinition par un scss consommateur chargé avant celui-ci).
+$output-border-light: rgba(0, 0, 0, 0.3) !default;
+$output-border-dark: rgba(255, 255, 255, 0.18) !default;
+
 $label-bg-input: rgba(33, 37, 41, 0.9);
 $label-bg-output: rgba(0, 123, 255, 0.9);
 $label-color: #ffffff;
@@ -39,7 +45,11 @@ $label-top-gap: 1.6rem; // espace laissé en haut du bloc pour le label
   pointer-events: none; /* don't intercept clicks (copy buttons etc.) */
 }
 
-// Sélecteurs de sortie (output) — cibler les zones de sortie rendues et conserver la bordure très légère
+// Sélecteurs de sortie (output) — cibler les zones de sortie rendues et conserver la bordure très légère.
+// Base sans scope = valeur light : Quarto ne pose l'attribut data-bs-theme que sur
+// bascule JS ; sans l'attribut (ou avant lui), le rendu reste identique à l'ancien
+// `rgba(0,0,0,0.3)` (zéro régression). Seule la bordure est pilotée par thème ; le
+// reste du bloc (position/padding/radius/background-clip) est theme-agnostic.
 .cell > .output_area,
 .cell > .output,
 .cell.output,
@@ -52,9 +62,25 @@ div.output,
 div.cell-output {
   position: relative;
   padding-top: $label-top-gap;
-  border: 1px solid rgba(0,0,0,0.3); /* bordure très légère */
+  border: 1px solid $output-border-light; /* bordure très légère */
   border-radius: 0.25rem;
   background-clip: padding-box;
+}
+
+/* Override border-color en mode sombre uniquement (sélecteur plus spécifique que la base) */
+[data-bs-theme="dark"] {
+  .cell > .output_area,
+  .cell > .output,
+  .cell.output,
+  div.output,
+  .output_area,
+  .rendered_html,
+  .quarto-output,
+  .html-widget,
+  .figure,
+  div.cell-output {
+    border-color: $output-border-dark;
+  }
 }
 
 .cell > .output_area::before,
