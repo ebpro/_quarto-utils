@@ -294,6 +294,30 @@ avec, dans le fichier :
 $presentation-font-size-root: 40px;
 ```
 
+## ⏱️ Timeout de rendu (`render-timeout-minutes`)
+
+Le step *Render with Quarto (Docker)* du workflow mutualisé est plafonné par
+l'input `render-timeout-minutes` (number, **défaut 60** = comportement
+historique, inchangé pour tous les wrappers existants). Le plafond du job
+`render` est un **litéral fixe 120 min** (= cap de render maximal supporté,
+90, + 30 min de marge pour checkout, cache, packaging, upload) : le contexte
+`inputs` n'est **pas** utilisable dans un `timeout-minutes` de job d'un
+workflow mutualisé (rejet du service Actions à la préparation du run, cf.
+actions/runner#1555). Les wrappers doivent donc garder
+`render-timeout-minutes <= 90`.
+
+À n'augmenter **que par wrapper**, pour un contenu connu lent : la priorité
+reste la correction côté contenu (ex. un kernel qui ne démarre jamais) ; le
+plafond relevé n'est qu'une mitigation temporaire. Exemple :
+
+```yaml
+jobs:
+  render:
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.3.20
+    with:
+      render-timeout-minutes: 90   # DEV-ADV : render complet mesuré ~38 min, hangs observés
+```
+
 ## 🛠️ Scripts utilitaires
 
 ### Génération d'images optimisées

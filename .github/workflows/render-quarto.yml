@@ -61,6 +61,11 @@ on:
         description: "Export revealjs decks to PDF via decktape (warn-only)"
         type: boolean
         default: false
+      render-timeout-minutes:
+        description: 'Hard cap (minutes) on the "Render with Quarto (Docker)" step. Default 60 = previous behaviour. Raise per-wrapper only for known-slow content (e.g. DEV-ADV 90).'
+        required: false
+        type: number
+        default: 60
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
@@ -68,7 +73,15 @@ concurrency:
 
 jobs:
   render:
-    timeout-minutes: 90
+    # Job ceiling is a FIXED literal 120 = worst-supported render cap (90)
+    # + 30 min headroom for checkout/cache/packaging/upload steps.
+    # Deliberately NOT an expression: the Actions service historically rejects
+    # the `inputs` context in job-level timeout-minutes of reusable workflows
+    # (actions/runner#1555), failing the run at preparation time with 0 jobs.
+    # The render cap itself is governed per-wrapper via the step-level
+    # `render-timeout-minutes` input below; the job timer is only the outer
+    # safety net. Wrappers must keep render-timeout-minutes <= 90.
+    timeout-minutes: 120
     runs-on: [self-hosted, linux, ebpro-org, x64]
     permissions:
       contents: read
@@ -127,7 +140,10 @@ jobs:
           fi
 
       - name: Render with Quarto (Docker)
-        timeout-minutes: 60
+        # fromJSON() coercion guards against the caller→callee boundary
+        # delivering the number input as a string ("Unexpected value '90'"
+        # evaluation errors, actions/runner#1555 discussion).
+        timeout-minutes: ${{ fromJSON(inputs.render-timeout-minutes) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PROFILES: ${{ inputs.profiles }}
