@@ -1,85 +1,13 @@
-/* Gallery — SOTA card grid for course indices
-   Theme: Quarto / Bootstrap 5.3 (data-bs-theme) */
-
-:root {
-  --g-surface: #ffffff;
-  --g-surface-hover: #f8f9fa;
-  --g-bg: var(--quarto-bg-primary, #ffffff);
-  --g-text: #1a1a2e;
-  --g-text-secondary: #5c6370;
-  --g-border: #e2e5e9;
-  --g-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
-  --g-shadow-hover: 0 4px 12px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08);
-  --g-badge-cours-bg: #e8f0fe;
-  --g-badge-cours-text: #1a56db;
-  --g-badge-tp-bg: #e6f7f1;
-  --g-badge-tp-text: #0d7a5f;
-  --g-btn-notes-bg: #1a56db;
-  --g-btn-notes-text: #ffffff;
-  --g-btn-notes-hover: #1648b8;
-  --g-btn-slides-bg: transparent;
-  --g-btn-slides-border: #d1d5db;
-  --g-btn-slides-text: #374151;
-  --g-btn-slides-hover-bg: #f3f4f6;
-  --g-search-bg: #f8f9fa;
-  --g-search-border: #e2e5e9;
-  --g-next-color: #9ca3af;
-  --g-next-hover: #1a56db;
-}
-
-[data-bs-theme="dark"] {
-  --g-surface: #1e1e2e;
-  --g-surface-hover: #26263a;
-  --g-bg: var(--quarto-bg-primary, #14141e);
-  --g-text: #e2e4e9;
-  --g-text-secondary: #9ca3af;
-  --g-border: #2e2e42;
-  --g-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-  --g-shadow-hover: 0 4px 12px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.3);
-  --g-badge-cours-bg: #1a2744;
-  --g-badge-cours-text: #60a5fa;
-  --g-badge-tp-bg: #0d2e24;
-  --g-badge-tp-text: #34d399;
-  --g-btn-notes-bg: #2563eb;
-  --g-btn-notes-text: #ffffff;
-  --g-btn-notes-hover: #3b82f6;
-  --g-btn-slides-bg: transparent;
-  --g-btn-slides-border: #3e3e56;
-  --g-btn-slides-text: #d1d5db;
-  --g-btn-slides-hover-bg: #26263a;
-  --g-search-bg: #1e1e2e;
-  --g-search-border: #2e2e42;
-  --g-next-color: #6b7280;
-  --g-next-hover: #60a5fa;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-bs-theme="light"]) {
-    --g-surface: #1e1e2e;
-    --g-surface-hover: #26263a;
-    --g-bg: var(--quarto-bg-primary, #14141e);
-    --g-text: #e2e4e9;
-    --g-text-secondary: #9ca3af;
-    --g-border: #2e2e42;
-    --g-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-    --g-shadow-hover: 0 4px 12px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.3);
-    --g-badge-cours-bg: #1a2744;
-    --g-badge-cours-text: #60a5fa;
-    --g-badge-tp-bg: #0d2e24;
-    --g-badge-tp-text: #34d399;
-    --g-btn-notes-bg: #2563eb;
-    --g-btn-notes-text: #ffffff;
-    --g-btn-notes-hover: #3b82f6;
-    --g-btn-slides-bg: transparent;
-    --g-btn-slides-border: #3e3e56;
-    --g-btn-slides-text: #d1d5db;
-    --g-btn-slides-hover-bg: #26263a;
-    --g-search-bg: #1e1e2e;
-    --g-search-border: #2e2e42;
-    --g-next-color: #6b7280;
-    --g-next-hover: #60a5fa;
-  }
-}
+/* Galerie — disposition agnostique du thème (cartes, badges, boutons, recherche).
+   Les tokens de thème (--g-*) ne vivent PLUS ici : depuis v1.3.22 ils sont
+   compilés dans les bundles bootstrap par-mode depuis custom.scss, que Quarto
+   charge deux fois (flatly = clair, darkly = sombre). Le vrai mécanisme de
+   bascule de Quarto (échange de bundles + body.quarto-dark/.quarto-light)
+   sélectionne alors les tokens via les règles :root de chaque bundle.
+   NE PAS réintroduire ici de [data-bs-theme="…"] ni de @media (prefers-color-
+   scheme: …) pour ces tokens : Quarto 1.10.18 n'émet jamais l'attribut
+   data-bs-theme et un media query brut découplerait les cartes (toujours
+   sombres en OS sombre, même sur page claire) — régression corrigée en v1.3.22. */
 
 /* Grid */
 .gallery-grid {
