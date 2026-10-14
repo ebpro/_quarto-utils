@@ -150,15 +150,22 @@ div.cell-output::before {
 // Vrai dans le bundle compilé sur fond sombre (darkly) ; faux sur flatly.
 $g-dark: lightness($body-bg) < 50%;
 
+// $success est défini dans les bundles bootstrap (flatly/darkly) mais PAS dans
+// le scope de compilation du thème revealjs (v1.3.23). Le motif !default (même
+// idiom que $output-border-* en tête de fichier) conserve la valeur du thème
+// dans les bundles notes/html et retombe sur le vert par défaut Bootstrap 5
+// uniquement pour le bundle revealjs (tokens jamais consommés là).
+$success: #198754 !default;
+
 :root {
-  --g-surface: #{if($g-dark, mix($body-color, $body-bg, 5%), $white)};
+  --g-surface: #{if($g-dark, mix($body-color, $body-bg, 5%), #fff)};
   --g-surface-hover: #{mix($body-color, $body-bg, if($g-dark, 9%, 4%))};
   --g-bg: #{$body-bg};
   --g-text: #{$body-color};
   --g-text-secondary: #{mix($body-color, $body-bg, 62%)};
   --g-border: #{mix($body-color, $body-bg, 12%)};
-  --g-shadow: 0 1px 3px rgba($black, if($g-dark, 0.30, 0.08)), 0 1px 2px rgba($black, if($g-dark, 0.20, 0.06));
-  --g-shadow-hover: 0 4px 12px rgba($black, if($g-dark, 0.40, 0.12)), 0 2px 4px rgba($black, if($g-dark, 0.30, 0.08));
+  --g-shadow: 0 1px 3px rgba(#000, if($g-dark, 0.30, 0.08)), 0 1px 2px rgba(#000, if($g-dark, 0.20, 0.06));
+  --g-shadow-hover: 0 4px 12px rgba(#000, if($g-dark, 0.40, 0.12)), 0 2px 4px rgba(#000, if($g-dark, 0.30, 0.08));
   --g-badge-cours-bg: #{rgba($primary, 0.12)};
   --g-badge-cours-text: #{mix($primary, $body-color, 65%)};
   --g-badge-tp-bg: #{rgba($success, 0.14)};
