@@ -1,0 +1,62 @@
+project:
+  type: website
+  output-dir: _output/
+
+  render:
+    - "**/*.qmd"  # rend tous les fichiers .qmd par défaut (récursif)
+    - "!**/HIDDEN/**"  # ignore tout contenu sous un répertoire HIDDEN (à n'importe quelle profondeur)
+    - "!_quarto-utils/**"
+    - "!notebook-containers-intro/**"
+website:
+  title: "Emmanuel BRUNO"
+  open-graph: true
+  page-navigation: true
+  bread-crumbs: true
+
+  sidebar:
+    style: docked
+    contents: auto
+
+format:
+  typst:
+    toc: true
+    section-numbering: 1.1.a
+    columns: 2
+    titlepage: true
+    figure-numbering: true
+    table-numbering: true
+    citation-style: apa
+    font-family: "Linux Libertine"
+    font-size: 12pt
+    color: "#333366"
+    header: "Document Title"
+    footer: "Page {page}"
+
+  html:
+    theme: 
+      light: [flatly, _quarto-utils/custom.scss]
+      dark:  [darkly,  _quarto-utils/custom.scss]  
+      #light: [flatly]
+      #dark:  [darkly]  
+
+    toc: true
+    # CENTRALISÉ ICI : css est sémantique « replace-not-merge » (le front matter
+    # d'une page REMPLACE la liste du projet, il ne la fusionne pas). Cette liste
+    # à UNE SEULE entrée n'est sûre que tant que le front matter des dépôts qui
+    # gardent une entrée css (notebook-git, notebook-containers-intro,
+    # DEV-ADV, CNAM PO43/PM44, notebook-java-jpa, notebook-quarto-sample) est
+    # EXACTEMENT identique (même entrée unique `_quarto-utils/gallery-custom.css`).
+    # Ne pas ajouter d'entrée ici sans aligner ces front matters, et ne pas
+    # retirer le préfixe `_quarto-utils/` (chemins résolus depuis la racine du
+    # projet consommateur, cf. theme: [_quarto-utils/custom.scss] plus haut).
+    css:
+      - _quarto-utils/gallery-custom.css
+    include-in-header:
+      - text: |
+          <script src="_quarto-utils/gallery-search.js" defer></script>
+
+format-links:
+  - html
+  - format: typst
+    text: PDF
+    icon: file-pdf
