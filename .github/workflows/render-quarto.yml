@@ -153,6 +153,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           DEPLOY_STATIC: ${{ inputs.deploy-static }}
           TEACHING_BASE_URL: ${{ secrets.TEACHING_BASE_URL }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           RENDER_CONTAINER="quarto-render-${RUN_ID}"
           # Extra docker-run args. The base env and the 'dind' host mapping are
@@ -218,20 +219,37 @@ jobs:
             BASEPATH="$(printf '%s' "$TEACHING_BASE_URL" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+##; s#/$##')"
             # REPO = nom court du dépôt (owner/repo -> repo)
             REPO="$(basename "$GITHUB_REPOSITORY")"
-            # SUBPATH depuis GITHUB_REF :
-            #   refs/heads/develop   -> develop
-            #   refs/heads/<branche> -> <branche> (les barres internes restent des répertoires imbriqués)
-            #   refs/tags/<tag>      -> releases/<tag>
+            # SUBPATH depuis GITHUB_REF (règle v1.3.22 — IDENTIQUE à l'étape
+            # « Compute target path » du job deploy-static : le REF décide du CHEMIN,
+            # jamais de l'éligibilité du job) :
+            #   refs/heads/<défaut>  -> develop          (URL develop inchangée)
+            #   refs/heads/<branche> -> previews/<slug>  ( / -> - ; [A-Za-z0-9._-] uniquement)
+            #   refs/tags/v*         -> releases/<tag>
+            #   refs/tags/<non-v*>   -> pas de déploiement -> pas de baseurl (notice)
             #   autre                -> erreur
+            sanitize_refname() {
+              local slug="${1//\//-}"
+              case "$slug" in
+                *[!A-Za-z0-9._-]*|"")
+                  echo "::error::nom de réf non sûr pour un chemin serveur: '$1' (slug '$slug'); seuls [A-Za-z0-9._-] et / sont acceptés" >&2
+                  return 1 ;;
+              esac
+              printf '%s' "$slug"
+            }
             case "$GITHUB_REF" in
-              refs/heads/develop)
-                SUBPATH="develop"
-                ;;
               refs/heads/*)
-                SUBPATH="${GITHUB_REF#refs/heads/}"
+                REFNAME="${GITHUB_REF#refs/heads/}"
+                if [ "$REFNAME" = "$DEFAULT_BRANCH" ]; then
+                  SUBPATH="develop"
+                else
+                  SUBPATH="previews/$(sanitize_refname "$REFNAME")" || exit 1
+                fi
+                ;;
+              refs/tags/v*)
+                SUBPATH="releases/${GITHUB_REF#refs/tags/}"
                 ;;
               refs/tags/*)
-                SUBPATH="releases/${GITHUB_REF#refs/tags/}"
+                echo "::notice::deploy-static: tag non-v '${GITHUB_REF#refs/tags/}' ignoré — rendu sans baseurl (pas de déploiement, règle v1.3.22)"
                 ;;
               *)
                 echo "::error::deploy-static=true mais GITHUB_REF '$GITHUB_REF' n'est ni une branche ni un tag; rendu avec baseurl refusé"
@@ -239,12 +257,15 @@ jobs:
                 ;;
             esac
             if [ -z "$SUBPATH" ]; then
-              echo "::error::SUBPATH vide pour GITHUB_REF '$GITHUB_REF'; rendu avec baseurl refusé"
-              exit 1
+              # Assouplissement v1.3.22 (décision lead) : refs/tags/<non-v*> ->
+              # pas de déploiement -> rendu SANS override baseurl, avec la notice
+              # ci-dessus. Le job render N'ÉCHECHE PLUS pour un tag non-v*.
+              echo "ℹ️  deploy-static: réf '$GITHUB_REF' non déployée -> rendu sans override baseurl"
+            else
+              BASEURL="${BASEPATH}/${REPO}/${SUBPATH}/"
+              echo "ℹ️  deploy-static: BASEURL=$BASEURL"
+              BASEURL_ARG=" --metadata baseurl=$BASEURL"
             fi
-            BASEURL="${BASEPATH}/${REPO}/${SUBPATH}/"
-            echo "ℹ️  deploy-static: BASEURL=$BASEURL"
-            BASEURL_ARG=" --metadata baseurl=$BASEURL"
           fi
           # -----------------------------------------------------------------------
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
@@ -545,20 +566,26 @@ jobs:
 
   deploy-static:
     needs: render
-    # Gate: opt-in input + push event + target is the repo default branch.
-    # Without the ref check, pushes to scratch/feature branches rsynced test
-    # output onto the live server (incident 2026-10-14: notebook-dev-web/develop/).
-    if: inputs.deploy-static && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    # Gate (v1.3.22): opt-in input + push/delete event. Le REF ne décide plus de
+    # l'éligibilité du job — il décide du CHEMIN DESTINATION dans l'étape
+    # « Compute target path » : branche par défaut -> develop/ ; autres branches
+    # -> previews/<slug>/ ; tags v* -> releases/<tag>/ (+ pointeur stable/) ;
+    # tags non-v* -> skip ; suppression de branche -> rm previews/<slug>/ uniquement.
+    # Les runs PR restent exclus côté wrapper (deploy-static: ${{ github.event_name
+    # != 'pull_request' }}) — jamais un PR ne reçoit deploy-static=true.
+    if: inputs.deploy-static && (github.event_name == 'push' || github.event_name == 'delete')
     timeout-minutes: 15
     runs-on: [self-hosted, linux, ebpro-org, x64]
     steps:
       - name: Download site artifact
+        if: github.event_name == 'push'
         uses: actions/download-artifact@v4
         with:
           name: site-zip
           path: site-zip
 
       - name: Unpack site
+        if: github.event_name == 'push'
         run: |
           mkdir -p site
           cd site-zip
@@ -571,18 +598,69 @@ jobs:
           fi
 
       - name: Compute target path (REPO + SUBPATH)
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_REF: ${{ github.event.ref }}
+          EVENT_REF_TYPE: ${{ github.event.ref_type }}
         run: |
           REPO="$(basename "$GITHUB_REPOSITORY")"
-          # MÊME règle de SUBPATH que l'injection de baseurl dans le job render.
+          if [ -z "$REPO" ]; then
+            echo "::error::REPO vide; déploiement refusé"
+            exit 1
+          fi
+          echo "REPO=$REPO" >> "$GITHUB_ENV"
+
+          # Slug de branche : / -> - ; caractères limités à [A-Za-z0-9._-]
+          # (chemins serveur + rm distants exigent un ensemble sûr).
+          sanitize_refname() {
+            local slug="${1//\//-}"
+            case "$slug" in
+              *[!A-Za-z0-9._-]*|"")
+                echo "::error::nom de réf non sûr pour un chemin serveur: '$1' (slug '$slug'); seuls [A-Za-z0-9._-] et / sont acceptés" >&2
+                return 1 ;;
+            esac
+            printf '%s' "$slug"
+          }
+
+          # --- delete : seule la suppression d'UNE branche retire previews/<slug>.
+          if [ "$GITHUB_EVENT_NAME" = "delete" ]; then
+            case "$EVENT_REF" in
+              refs/heads/*)
+                DELNAME="${EVENT_REF#refs/heads/}"
+                if [ "$DELNAME" = "$DEFAULT_BRANCH" ] || [ "$DELNAME" = "develop" ]; then
+                  echo "Suppression de la branche par défaut/develop — no-op côté serveur (develop/ n'est JAMAIS supprimé)."
+                  exit 0
+                fi
+                DELSUB="previews/$(sanitize_refname "$DELNAME")" || exit 1
+                echo "SUBPATH=$DELSUB" >> "$GITHUB_ENV"
+                echo "DELETE_PREVIEW=true" >> "$GITHUB_ENV"
+                echo "Cible de suppression : bruno@vai.univ-tln.fr:teaching-material/$REPO/$DELSUB/"
+                ;;
+              *)
+                echo "delete (ref_type=${EVENT_REF_TYPE:-?}, ref=${EVENT_REF:-?}) — no-op : les tags supprimés ne touchent jamais releases/ (règle v1.3.22)."
+                ;;
+            esac
+            exit 0
+          fi
+
+          # --- push : le REF décide du CHEMIN (MÊME règle que la baseurl du job render).
           case "$GITHUB_REF" in
-            refs/heads/develop)
-              SUBPATH="develop"
-              ;;
             refs/heads/*)
-              SUBPATH="${GITHUB_REF#refs/heads/}"
+              REFNAME="${GITHUB_REF#refs/heads/}"
+              if [ "$REFNAME" = "$DEFAULT_BRANCH" ]; then
+                SUBPATH="develop"
+              else
+                SUBPATH="previews/$(sanitize_refname "$REFNAME")" || exit 1
+              fi
+              ;;
+            refs/tags/v*)
+              SUBPATH="releases/${GITHUB_REF#refs/tags/}"
+              echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
               ;;
             refs/tags/*)
-              SUBPATH="releases/${GITHUB_REF#refs/tags/}"
+              echo "::notice::Tag '${GITHUB_REF#refs/tags/}' (non v*) — déploiement ignoré (règle v1.3.22)."
+              echo "DEPLOY_SKIP=true" >> "$GITHUB_ENV"
+              exit 0
               ;;
             *)
               echo "::error::GITHUB_REF '$GITHUB_REF' n'est ni une branche ni un tag; déploiement refusé"
@@ -621,6 +699,7 @@ jobs:
           echo "KEY=$KEY" >> "$GITHUB_ENV"
 
       - name: Ensure rsync is available
+        if: github.event_name == 'push'
         run: |
           set -euo pipefail
           if command -v rsync >/dev/null 2>&1; then
@@ -643,6 +722,7 @@ jobs:
           echo "Installed: $(rsync --version | head -n1)"
 
       - name: rsync to personal server (scoped --delete)
+        if: github.event_name == 'push' && env.DEPLOY_SKIP != 'true'
         run: |
           # Re-vérification de sécurité juste avant le rsync destructif.
           if [ -z "$SUBPATH" ]; then
@@ -654,7 +734,38 @@ jobs:
           rsync -az --delete --mkpath -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" site/ "bruno@vai.univ-tln.fr:$DEST"
           echo "✅ rsync terminé : bruno@vai.univ-tln.fr:$DEST"
 
+      - name: Remove preview directory (branch delete only)
+        # Règle v1.3.22 : une suppression de branche ne retire QUE previews/<slug>.
+        # develop/ et releases/ ne sont JAMAIS touchés par un delete event
+        # (branche par défaut -> no-op amont ; tag -> no-op amont).
+        if: github.event_name == 'delete' && env.DELETE_PREVIEW == 'true'
+        run: |
+          # Triple garde-fou avant le rm -rf distant.
+          if [ -z "$REPO" ] || [ -z "$SUBPATH" ]; then
+            echo "::error::REPO/SUBPATH vide; suppression refusée"
+            exit 1
+          fi
+          case "$SUBPATH" in
+            previews/*/*)
+              echo "::error::Suppression refusée : SUBPATH imbriqué '$SUBPATH'"
+              exit 1 ;;
+            previews/*) ;;
+            *)
+              echo "::error::Suppression refusée : SUBPATH '$SUBPATH' hors de previews/"
+              exit 1 ;;
+          esac
+          DEST="teaching-material/$REPO/$SUBPATH"
+          COMPONENT_COUNT="$(printf '%s' "$DEST" | awk -F'/' '{n=0; for(i=1;i<=NF;i++) if($i!="") n++; print n}')"
+          if [ "$COMPONENT_COUNT" -lt 3 ]; then
+            echo "::error::Chemin '$DEST' a moins de 3 composants; suppression refusée"
+            exit 1
+          fi
+          echo "Suppression serveur : bruno@vai.univ-tln.fr:$DEST/"
+          ssh -i "$KEY" -o StrictHostKeyChecking=accept-new bruno@vai.univ-tln.fr "rm -rf -- '$DEST'"
+          echo "✅ Preview supprimé : bruno@vai.univ-tln.fr:$DEST/"
+
       - name: Write root placeholder index.html
+        if: github.event_name == 'push' && env.DEPLOY_SKIP != 'true'
         run: |
           DEST_DIR="teaching-material/$REPO"
           # Écrasement d'UN SEUL fichier à la racine du dépôt (SANS --delete, SANS sync de répertoire).
@@ -681,6 +792,38 @@ jobs:
           </html>
           INDEX_HTML_EOF
           echo "✅ Placeholder écrit : bruno@vai.univ-tln.fr:$DEST_DIR/index.html"
+
+      - name: Write stable pointer (v* tag releases)
+        # Écrit <repo>/stable/index.html (meta-refresh) -> ../releases/<tag>/ après
+        # un déploiement réussi de tag v*. RISQUE ACCEPTÉ (v1.3.22, décidé au
+        # rollout) : le pointeur est réécrit à CHAQUE push de tag v* couronné de
+        # succès — repousser un tag plus ancien ou déployer un hotfix sur un tag
+        # antérieur redirige « stable » vers ce tag (dernier déployé gagnant,
+        # sans comparaison de versions). Accepté car les tags de release ebpro
+        # sont immuables en pratique ; à durcir en semver-compare si besoin.
+        if: github.event_name == 'push' && env.TAG != ''
+        run: |
+          STABLE_DIR="teaching-material/$REPO/stable"
+          ssh -i "$KEY" -o StrictHostKeyChecking=accept-new bruno@vai.univ-tln.fr "mkdir -p '$STABLE_DIR' && cat > '$STABLE_DIR/index.html'" <<STABLE_POINTER_EOF
+          <!DOCTYPE html>
+          <html lang="fr">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta http-equiv="refresh" content="0; url=../releases/$TAG/">
+          <link rel="canonical" href="../releases/$TAG/">
+          <title>Version stable : $TAG</title>
+          <style>
+          body { font-family: system-ui, -apple-system, sans-serif; margin: 4rem auto; max-width: 40rem; padding: 0 1rem; color: #1f2328; }
+          a { color: #0969da; }
+          </style>
+          </head>
+          <body>
+          <p>Redirection vers la version stable <a href="../releases/$TAG/">$TAG</a>…</p>
+          </body>
+          </html>
+          STABLE_POINTER_EOF
+          echo "✅ Pointeur stable écrit : bruno@vai.univ-tln.fr:$STABLE_DIR/index.html -> releases/$TAG/"
 
       - name: Clean up SSH key
         if: always()

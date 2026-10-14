@@ -128,3 +128,92 @@ div.cell-output::before {
     padding: 0.08rem 0.4rem;
   }
 }
+/* =============================================================================
+   Galerie — tokens de thème (--g-*) — v1.3.22 (correctif card-theme)
+   Les tokens utilisés par gallery-custom.css vivent ICI (custom.scss) et plus
+   dans gallery-custom.css : custom.scss est compilé DEUX FOIS par Quarto
+   (theme: light=[flatly, custom.scss], dark=[darkly, custom.scss]) et atterrit
+   dans chacun des deux bundles bootstrap du site. Les valeurs ci-dessous sont
+   DÉRIVÉES de $body-bg / $body-color / $primary / $success, qui diffèrent entre
+   les deux bundles compilés ; le vrai mécanisme de bascule de Quarto (échange
+   de bundles + body.quarto-dark/.quarto-light) sélectionne donc les bons
+   tokens. L'ancien mécanisme ([data-bs-theme="dark"] + @media prefers-color-
+   scheme dans gallery-custom.css) était MORT : Quarto 1.10.18 n'émet jamais
+   l'attribut data-bs-theme et le media query brut était découplé du toggle de
+   page → cartes toujours sombres pour les utilisateurs d'OS sombre, y compris
+   sur une page claire. NE PAS réintroduire de sélecteur data-bs-theme ni de
+  @media prefers-color-scheme pour ces tokens dans les css NON compilés.
+   (Note scope : le bloc [data-bs-theme=dark] des BORDERES DE SORTIE plus haut
+   dans ce fichier présente le même twin-bug pré-existant — hors scope v1.3.22.)
+   ========================================================================== */
+
+// Vrai dans le bundle compilé sur fond sombre (darkly) ; faux sur flatly.
+$g-dark: lightness($body-bg) < 50%;
+
+:root {
+  --g-surface: #{if($g-dark, mix($body-color, $body-bg, 5%), $white)};
+  --g-surface-hover: #{mix($body-color, $body-bg, if($g-dark, 9%, 4%))};
+  --g-bg: #{$body-bg};
+  --g-text: #{$body-color};
+  --g-text-secondary: #{mix($body-color, $body-bg, 62%)};
+  --g-border: #{mix($body-color, $body-bg, 12%)};
+  --g-shadow: 0 1px 3px rgba($black, if($g-dark, 0.30, 0.08)), 0 1px 2px rgba($black, if($g-dark, 0.20, 0.06));
+  --g-shadow-hover: 0 4px 12px rgba($black, if($g-dark, 0.40, 0.12)), 0 2px 4px rgba($black, if($g-dark, 0.30, 0.08));
+  --g-badge-cours-bg: #{rgba($primary, 0.12)};
+  --g-badge-cours-text: #{mix($primary, $body-color, 65%)};
+  --g-badge-tp-bg: #{rgba($success, 0.14)};
+  --g-badge-tp-text: #{mix($success, $body-color, 65%)};
+  --g-btn-notes-bg: #{$primary};
+  --g-btn-notes-text: #{color-contrast($primary)};
+  --g-btn-notes-hover: #{if($g-dark, lighten($primary, 8%), darken($primary, 8%))};
+  --g-btn-slides-bg: transparent;
+  --g-btn-slides-border: #{mix($body-color, $body-bg, 22%)};
+  --g-btn-slides-text: #{mix($body-color, $body-bg, 80%)};
+  --g-btn-slides-hover-bg: #{mix($body-color, $body-bg, 7%)};
+  --g-search-bg: #{mix($body-color, $body-bg, 4%)};
+  --g-search-border: #{mix($body-color, $body-bg, 12%)};
+  --g-next-color: #{mix($body-color, $body-bg, 45%)};
+  --g-next-hover: #{mix($primary, $body-color, 70%)};
+}
+
+/* Cartes de listing (gabarit grille par défaut de Quarto : .quarto-listing
+   .card) — cohérence titre / description / survol avec la galerie ci-dessus.
+   Minimal et scopé : bordure douce, ombre discrète, rayon cohérent (12px),
+   léger lift au survol. v1.3.22. */
+.quarto-listing .card {
+  border: 1px solid var(--g-border);
+  border-radius: 12px;
+  background: var(--g-surface);
+  box-shadow: var(--g-shadow);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--g-shadow-hover);
+    background: var(--g-surface-hover);
+  }
+
+  .card-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    line-height: 1.4;
+    margin-bottom: 0.5rem;
+    color: var(--g-text);
+  }
+
+  .card-title a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .card-title a:hover {
+    color: var(--g-next-hover);
+  }
+
+  .card-text,
+  .card-body > p {
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: var(--g-text-secondary);
+  }
+}
