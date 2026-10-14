@@ -623,23 +623,24 @@ jobs:
           }
 
           # --- delete : seule la suppression d'UNE branche retire previews/<slug>.
+          # FIX v1.3.24 : le payload d'un delete-event ne contient PAS de préfixe
+          # refs/ : "ref" est le nom NU (ex. preview/x) et "ref_type" porte
+          # "branch" ou "tag" (vécu : run 38566678336). Dispatch sur ref_type ;
+          # normalisation défensive d'un préfixe refs/heads/ éventuel.
           if [ "$GITHUB_EVENT_NAME" = "delete" ]; then
-            case "$EVENT_REF" in
-              refs/heads/*)
-                DELNAME="${EVENT_REF#refs/heads/}"
-                if [ "$DELNAME" = "$DEFAULT_BRANCH" ] || [ "$DELNAME" = "develop" ]; then
-                  echo "Suppression de la branche par défaut/develop — no-op côté serveur (develop/ n'est JAMAIS supprimé)."
-                  exit 0
-                fi
-                DELSUB="previews/$(sanitize_refname "$DELNAME")" || exit 1
-                echo "SUBPATH=$DELSUB" >> "$GITHUB_ENV"
-                echo "DELETE_PREVIEW=true" >> "$GITHUB_ENV"
-                echo "Cible de suppression : bruno@vai.univ-tln.fr:teaching-material/$REPO/$DELSUB/"
-                ;;
-              *)
-                echo "delete (ref_type=${EVENT_REF_TYPE:-?}, ref=${EVENT_REF:-?}) — no-op : les tags supprimés ne touchent jamais releases/ (règle v1.3.22)."
-                ;;
-            esac
+            if [ "$EVENT_REF_TYPE" = "branch" ]; then
+              DELNAME="${EVENT_REF#refs/heads/}"
+              if [ "$DELNAME" = "$DEFAULT_BRANCH" ] || [ "$DELNAME" = "develop" ]; then
+                echo "Suppression de la branche par défaut/develop — no-op côté serveur (develop/ n'est JAMAIS supprimé)."
+                exit 0
+              fi
+              DELSUB="previews/$(sanitize_refname "$DELNAME")" || exit 1
+              echo "SUBPATH=$DELSUB" >> "$GITHUB_ENV"
+              echo "DELETE_PREVIEW=true" >> "$GITHUB_ENV"
+              echo "Cible de suppression : bruno@vai.univ-tln.fr:teaching-material/$REPO/$DELSUB/"
+            else
+              echo "delete (ref_type=${EVENT_REF_TYPE:-?}, ref=${EVENT_REF:-?}) — no-op : les tags supprimés ne touchent jamais releases/ (règle v1.3.22)."
+            fi
             exit 0
           fi
 
