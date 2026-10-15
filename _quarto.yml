@@ -40,7 +40,7 @@ filters:
    - code-fullscreen
    - roughnotation
    - code-visibility
-   - diagram  # pandoc-ext/diagram: plantuml
+   - _extensions/pandoc-ext/diagram/diagram.lua  # pandoc-ext/diagram: plantuml
 
 extensions:
     - _extensions/kazuyanagimoto/clean
