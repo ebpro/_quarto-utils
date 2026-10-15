@@ -32,26 +32,11 @@ on:
         required: false
         type: string
         default: '_output'
-      deploy-pages:
-        description: 'Deploy to GitHub Pages (main branch only)'
-        required: false
-        type: boolean
-        default: true
-      deploy-cloudflare:
-        description: 'Deploy to Cloudflare Pages preview (non-main branches)'
-        required: false
-        type: boolean
-        default: true
       deploy-static:
         description: 'DORMANT: déploiement vers le serveur personnel via rsync (opt-in par wrapper)'
         required: false
         type: boolean
         default: false
-      cf-project-name:
-        description: 'Cloudflare Pages project name (default: derive from repo name)'
-        required: false
-        type: string
-        default: ''
       enable-docker:
         description: 'Mount the host Docker socket so docker cells render live (dooD)'
         required: false
@@ -67,10 +52,10 @@ on:
         type: number
         default: 60
       freeze:
-        description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. Set false to force full cold execution.'
+        description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. v1.3.27: default switched to FALSE — pins must not silently adopt the freeze machinery; wrappers opt in explicitly with `freeze: true`. Set false (default) to force full cold execution.'
         required: false
         type: boolean
-        default: true
+        default: false
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
@@ -461,6 +446,12 @@ jobs:
           fi
           # -----------------------------------------------------------------------
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
+          # v1.3.27: merged stdout+stderr of every profile render, tee'd to a
+          # workspace file so the "Listing-warn gate" step can inspect it after
+          # the loop. (quarto-exec.log from --log is overwritten per profile —
+          # this file accumulates across all of them.)
+          RENDER_LOG="$GITHUB_WORKSPACE/render-output.log"
+          rm -f "$RENDER_LOG"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
             # --log: always write quarto's log into the workspace (mounted at
@@ -477,8 +468,48 @@ jobs:
               -w /workdir \
               "${DOCKER_ARGS[@]}" \
               "$QUARTO_IMAGE" \
-              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p' --log /workdir/quarto-exec.log${RENDER_EXTRA_ARGS:+ $RENDER_EXTRA_ARGS}$BASEURL_ARG"
+              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p' --log /workdir/quarto-exec.log${RENDER_EXTRA_ARGS:+ $RENDER_EXTRA_ARGS}$BASEURL_ARG" \
+              2>&1 | tee -a "$RENDER_LOG"
+            # Scoped pipefail so a non-zero `docker run` still fails the step
+            # through the tee pipe (the step shell is bash -e WITHOUT pipefail;
+            # setting it step-wide would change unrelated pipeline semantics).
+            pipe_status=${PIPESTATUS[0]}
+            if [ "$pipe_status" -ne 0 ]; then
+              exit "$pipe_status"
+            fi
           done
+
+      - name: Listing-warn gate
+        # v1.3.27: fail the render when Quarto emitted an empty-listing WARN
+        # ("The listing in '<file>' using the following contents: ... doesn't
+        # match any files or folders."). Such a listing silently yields an
+        # empty section — historically the root cause of never-green content.
+        # Pattern validated read-only on real runner logs: victim job
+        # 116219784910 (run 38672868242, java101: both fragments present) vs
+        # healthy job 115966630781 (run 38597126794, se-101: both absent).
+        env:
+          RENDER_LOG: ${{ github.workspace }}/render-output.log
+        run: |
+          set -uo pipefail
+          # Render succeeded => file exists; still guard for robustness.
+          [ -f "$RENDER_LOG" ] || { echo "listing-warn-gate: no render-output.log — skipping"; exit 0; }
+          CLEAN="$(mktemp)"
+          # Strip ANSI colour escapes so grep anchors match plain text.
+          sed 's/\x1b\[[0-9;]*m//g' "$RENDER_LOG" > "$CLEAN"
+          if grep -q 'The listing in' "$CLEAN" && grep -q "doesn't match any files" "$CLEAN"; then
+            {
+              echo "### ❌ listing-warn-gate: empty listing detected"
+              echo ""
+              echo '```'
+              grep -A6 'The listing in' "$CLEAN"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            rm -f "$CLEAN"
+            echo "::error::listing-warn-gate: empty listing detected (details in job summary)"
+            exit 1
+          fi
+          rm -f "$CLEAN"
+          echo "✅ listing-warn-gate: no empty-listing WARN in render output"
 
       - name: Export slides PDF (decktape)
         # Runs BEFORE "Package rendered output": PDFs land in <output-path>/pdf/
@@ -783,21 +814,23 @@ jobs:
           BYTES="$(du -sb "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" 2>/dev/null | awk '{s+=$1} END{print s+0}')"
           CAP=$((900 * 1024 * 1024))
           MB=$((BYTES / 1024 / 1024))
+          # v1.3.27 (cosmetic): sub-MiB payloads printed as "0 MiB" — show bytes instead.
+          if [ "$BYTES" -lt 1048576 ]; then HUMAN="${BYTES} bytes"; else HUMAN="${MB} MiB"; fi
           echo "bytes=$BYTES" >> "$GITHUB_OUTPUT"
           if [ "$BYTES" -gt 0 ] && [ "$BYTES" -lt "$CAP" ]; then
             echo "under_cap=true" >> "$GITHUB_OUTPUT"
-            echo "✅ freeze cache payload ${MB} MiB (>0, < 900 MiB cap) — save allowed"
+            echo "✅ freeze cache payload ${HUMAN} (>0, < 900 MiB cap) — save allowed"
           else
             echo "under_cap=false" >> "$GITHUB_OUTPUT"
             if [ "$BYTES" -eq 0 ]; then
               echo "::warning::freeze cache payload is empty (no _freeze/.quarto content) — skipping cache save"
             else
-              echo "::warning::freeze cache payload ${MB} MiB >= 900 MiB cap — skipping cache save"
+              echo "::warning::freeze cache payload ${HUMAN} >= 900 MiB cap — skipping cache save"
             fi
             {
               echo "### ⚠️ Freeze cache save skipped"
               echo ""
-              echo "Cache payload (\`du -sb _freeze .quarto\`) is ${MB} MiB — outside the (0, 900 MiB) save window; nothing saved."
+              echo "Cache payload (\`du -sb _freeze .quarto\`) is ${HUMAN} — outside the (0, 900 MiB) save window; nothing saved."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
