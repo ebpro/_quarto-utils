@@ -1,0 +1,229 @@
+name: Visual check (reusable)
+
+# M2 visual-QA rollout. Consumes the render job's site-zip artifact from the
+# SAME run as a sibling job (the b1 mechanic): download-artifact resolves by
+# name within the run — no repo/run-id parameters. Usage from a caller:
+#
+#   jobs:
+#     visual-check:
+#       needs: render            # the reusable render-quarto.yml job id
+#       uses: ebpro/_quarto-utils/.github/workflows/visual-check.yml@<ref>
+#       with: { gate: advisory }
+
+on:
+  workflow_call:
+    inputs:
+      site-artifact:
+        description: 'Name of the same-run artifact carrying site-zip.zip (render-quarto uploads "site-zip")'
+        required: false
+        type: string
+        default: 'site-zip'
+      tool-ref:
+        description: 'ebpro/tooling-visual-qa ref to run (tag recommended). NOTE: v0.1.1 cannot launch a browser in-container — use v0.1.2+'
+        required: false
+        type: string
+        default: 'v0.1.3'
+      gate:
+        description: 'advisory = always exit 0 (counts reported); error = fail the job when any severity=error violation row exists'
+        required: false
+        type: string
+        default: 'advisory'
+      quarto-image:
+        description: 'Container image providing node + chrome-headless-shell (default = the image the fleet currently renders on)'
+        required: false
+        type: string
+        default: 'ghcr.io/ebpro/solen:quarto-full-build-20261010T172146Z'
+      filter:
+        description: 'Optional regex passed through to the tool page filter (empty = check every page)'
+        required: false
+        type: string
+        default: ''
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visual-check-${{ github.event.repository.full_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  visual-check:
+    timeout-minutes: 30
+    runs-on: [self-hosted, linux, ebpro-org, x64]
+    steps:
+      - name: Download site artifact (same run — b1 mechanic)
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.site-artifact }}
+          path: site-zip
+
+      - name: Unpack site
+        # Same shape as render-quarto deploy-static "Unpack site": the zip
+        # stores paths relative to the site root (python zipfile walk in
+        # "Package rendered output").
+        run: |
+          set -uo pipefail
+          rm -rf site
+          mkdir -p site
+          cd site-zip
+          unzip -oq site-zip.zip -d ../site
+          FILE_COUNT=$(find ../site -type f | wc -l)
+          echo "site unpacked: $FILE_COUNT files"
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "::error::site/ contains 0 files after unpack — refusing to check an empty site"
+            exit 1
+          fi
+
+      - name: Checkout visual-QA tool
+        # Public repo: anonymous https clone, no token needed (keeps the
+        # reusable secret-free). --branch accepts tags/branches, not raw SHAs.
+        env:
+          TOOL_REF: ${{ inputs.tool-ref }}
+        run: |
+          set -uo pipefail
+          rm -rf vqa-tool
+          git clone --depth 1 --branch "$TOOL_REF" https://github.com/ebpro/tooling-visual-qa.git vqa-tool
+          git -C vqa-tool rev-parse HEAD
+
+      - name: Run visual check (solen container)
+        env:
+          QUARTO_IMAGE: ${{ inputs.quarto-image }}
+          VQA_FILTER: ${{ inputs.filter }}
+        run: |
+          set -uo pipefail
+          SCRIPT="${GITHUB_WORKSPACE}/.vqa-run.sh"
+          # Decktape run-#38 lesson: the runner talks to the HOST daemon; only
+          # $GITHUB_WORKSPACE (mounted at /workdir) is host<->container shared.
+          # The script lives at the workspace root, OUTSIDE site/, and is
+          # removed after the run. The heredoc body/terminator below sit at the
+          # block-scalar base indent so they dedent to column 0 in the script.
+          cat > "$SCRIPT" <<'VQA_SCRIPT_EOF'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          echo ">> container diagnostics:"
+          node --version; npm --version; python3 --version
+          EXE=""
+          for c in /usr/local/bin/chrome-headless-shell \
+                   /home/jovyan/.local/share/quarto/chrome-headless-shell \
+                   "$HOME/.local/share/quarto/chrome-headless-shell"; do
+            if [ -x "$c" ]; then EXE="$c"; break; fi
+          done
+          if [ -z "$EXE" ]; then
+            echo "::error::TOOL BROKEN: no chrome-headless-shell found in image — the check cannot run on this image"
+            exit 2
+          fi
+          export VQA_EXECUTABLE_PATH="$EXE"
+          export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+          cd /workdir/vqa-tool
+          echo ">> tool: $(git describe --tags --always 2>/dev/null || echo unknown) ($(git rev-parse --short HEAD))"
+          npm ci --no-audit --no-fund
+          echo ">> STEP 0: selftest (anti-misdiagnosis: broken tool must never masquerade as site defects)"
+          if node selftest.mjs --out /workdir/vqa-selftest; then
+            echo PASS > /workdir/.vqa-selftest-status
+          else
+            echo FAIL > /workdir/.vqa-selftest-status
+            echo "::error::TOOL BROKEN: selftest failed — checker results are unreliable; do NOT read site defects from this run"
+            exit 3
+          fi
+          echo ">> running check on /workdir/site"
+          node src/cli.mjs check --site /workdir/site --out /workdir/vqa-report ${VQA_FILTER:+--filter "$VQA_FILTER"}
+          node --input-type=module -e "
+          import { pathToFileURL } from 'node:url';
+          import fs from 'node:fs';
+          const { CHECK_REGISTRY } = await import(pathToFileURL('/workdir/vqa-tool/src/registry.mjs').href);
+          const sev = Object.fromEntries(CHECK_REGISTRY.map((c) => [c.id, c.severity]));
+          const rows = fs.readFileSync('/workdir/vqa-report/violations.jsonl', 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+          const err = rows.filter((r) => (sev[r.check] ?? 'error') === 'error');
+          fs.writeFileSync('/workdir/vqa-report/gate.json', JSON.stringify({ totalRows: rows.length, errorRows: err.length, severities: sev }, null, 2));
+          console.log('gate.json: ' + rows.length + ' rows, ' + err.length + ' error-class');
+          "
+          VQA_SCRIPT_EOF
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/workdir \
+            -w /workdir \
+            -e VQA_BROWSER_ARGS='--no-sandbox,--disable-dev-shm-usage' \
+            -e VQA_FILTER="$VQA_FILTER" \
+            "$QUARTO_IMAGE" \
+            bash -lc "bash /workdir/.vqa-run.sh"
+          RC=$?
+          rm -f "$SCRIPT"
+          exit $RC
+
+      - name: Step summary
+        if: always()
+        env:
+          GATE: ${{ inputs.gate }}
+          TOOL_REF: ${{ inputs.tool-ref }}
+          QUARTO_IMAGE: ${{ inputs.quarto-image }}
+          VQA_FILTER: ${{ inputs.filter }}
+        run: |
+          python3 - <<'SUMMARY_EOF'
+          import json, os
+          ws = os.environ["GITHUB_WORKSPACE"]
+          out = os.environ["GITHUB_STEP_SUMMARY"]
+          def rd(p):
+              try:
+                  with open(os.path.join(ws, p)) as f:
+                      return f.read()
+              except Exception:
+                  return None
+          selftest = rd(".vqa-selftest-status") or "NOT-RUN"
+          summary = rd("vqa-report/summary.json")
+          gate = rd("vqa-report/gate.json")
+          lines = ["## Visual check (tooling-visual-qa)", ""]
+          lines.append("- selftest: **%s**" % selftest.strip())
+          lines.append("- tool ref: `%s` | image: `%s`" % (os.environ["TOOL_REF"], os.environ["QUARTO_IMAGE"]))
+          lines.append("- gate mode: `%s` | filter: `%s`" % (os.environ["GATE"], os.environ["VQA_FILTER"] or "(none)"))
+          if summary:
+              s = json.loads(summary)
+              lines.append("- pages checked: **%d** | duration: %ss" % (len(s.get("pages", [])), s.get("durationSec")))
+              t = s.get("totals", {})
+              byc = t.get("byCheck", {})
+              byct = t.get("byCheckAndPageType", {})
+              if byc:
+                  lines += ["", "| check | total | notes | slides |", "|---|---|---|---|"]
+                  for c in sorted(byc):
+                      lines.append("| %s | %d | %d | %d |" % (c, byc[c], byct.get(c + "/notes", 0), byct.get(c + "/slides", 0)))
+              lines.append("")
+              lines.append("Totals: %d violation rows, %d intentional scrollers." % (t.get("violations", 0), t.get("intentionalScrollers", 0)))
+              if gate:
+                  g = json.loads(gate)
+                  lines.append("Gate input: %d/%d rows are error-class per the tool registry." % (g["errorRows"], g["totalRows"]))
+          else:
+              lines.append("- no summary.json — the check did not complete (see job log; selftest FAIL = TOOL BROKEN, not site defects)")
+          with open(out, "a") as f:
+              f.write("\n".join(lines) + "\n")
+          SUMMARY_EOF
+
+      - name: Upload visual-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-check-report
+          path: vqa-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Gate
+        env:
+          GATE: ${{ inputs.gate }}
+        run: |
+          set -uo pipefail
+          if [ ! -f vqa-report/gate.json ]; then
+            echo "::error::gate.json missing — the check did not complete; not interpreting as pass"
+            exit 1
+          fi
+          if [ "$GATE" != "error" ]; then
+            echo "advisory gate: $(python3 -c "import json;g=json.load(open('vqa-report/gate.json'));print(str(g['errorRows'])+' error-class / '+str(g['totalRows'])+' rows')") — exit 0 by design"
+            exit 0
+          fi
+          ERRORS=$(python3 -c "import json;print(json.load(open('vqa-report/gate.json'))['errorRows'])")
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::visual-check gate=error: $ERRORS error-class violation row(s) — see the visual-check-report artifact"
+            exit 1
+          fi
+          echo "gate=error: 0 error-class rows — pass"
