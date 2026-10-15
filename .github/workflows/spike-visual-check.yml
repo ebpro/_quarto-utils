@@ -1,0 +1,121 @@
+name: Spike — visual-check reusable (b1 artifact chain proof)
+
+# M2 gate: proves the sibling-consumption mechanic end-to-end WITHOUT a real
+# render: stub-render uploads site-zip exactly like render-quarto's render job
+# does; the reusable visual-check job (needs: + uses:) downloads it by name
+# from the same run and runs the tool; assert-spike binary-tests that the
+# planted defect (missing.png) surfaces in the report artifact. Green
+# assert-spike == b1 proven AND detection works through the artifact path.
+
+on:
+  push:
+    branches: [feature/visual-check-reusable]
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spike-visual-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stub-render:
+    timeout-minutes: 10
+    runs-on: [self-hosted, linux, ebpro-org, x64]
+    steps:
+      - name: 'Build stub site (planted defect: missing.png)'
+        run: |
+          set -uo pipefail
+          rm -rf site site-zip.zip
+          mkdir -p site/_slides
+          cat > site/index.html <<'STUB_INDEX_EOF'
+          <!doctype html>
+          <html lang="en"><head><meta charset="utf-8"><title>spike stub</title></head>
+          <body>
+          <h1>visual-check spike stub</h1>
+          <img src="missing.png" width="200" height="100" alt="planted defect">
+          </body></html>
+          STUB_INDEX_EOF
+          cat > site/_slides/deck.html <<'STUB_DECK_EOF'
+          <!doctype html>
+          <html lang="en"><head><meta charset="utf-8"><title>spike deck</title>
+          <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.css">
+          </head>
+          <body>
+          <div class="reveal"><div class="slides">
+          <section>Slide one (spike)</section>
+          <section>Slide two (spike)</section>
+          </div></div>
+          <script src="https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js"></script>
+          <script>Reveal.initialize();</script>
+          </body></html>
+          STUB_DECK_EOF
+          find site -type f
+
+      - name: 'Zip site (mirrors render-quarto Package rendered output)'
+        run: |
+          set -uo pipefail
+          cd site
+          python3 -c "
+          import zipfile, os
+          zp = os.path.join(os.getcwd(), '..', 'site-zip.zip')
+          zf = zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED)
+          for root, dirs, files in os.walk('.'):
+              for f in files:
+                  zf.write(os.path.join(root, f))
+          zf.close()
+          print('Created zip:', os.path.getsize(zp), 'bytes')
+          "
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-zip
+          path: site-zip.zip
+          retention-days: 7
+
+  visual-check:
+    # b1 mechanic under test: needs: + uses: of the reusable; the reusable's
+    # download-artifact resolves site-zip from THIS run with no repo/run-id
+    # parameters.
+    needs: stub-render
+    uses: ./.github/workflows/visual-check.yml
+    with:
+      gate: advisory
+      tool-ref: v0.1.2
+
+  assert-spike:
+    needs: visual-check
+    timeout-minutes: 10
+    runs-on: [self-hosted, linux, ebpro-org, x64]
+    steps:
+      - name: Download visual-check report
+        uses: actions/download-artifact@v4
+        with:
+          name: visual-check-report
+          path: report
+
+      - name: Assert planted defect caught end-to-end
+        run: |
+          python3 - <<'ASSERT_EOF'
+          import json, os, sys
+          p = "report/violations.jsonl"
+          if not os.path.isfile(p):
+              sys.exit("ASSERT FAIL: report/violations.jsonl missing — reusable chain broken")
+          rows = [json.loads(l) for l in open(p) if l.strip()]
+          hits = [r for r in rows if "missing.png" in (r.get("detail", "") + r.get("selector", ""))]
+          if not hits:
+              sys.exit("ASSERT FAIL: planted defect (missing.png) not detected — first rows: " + json.dumps(rows[:5]))
+          checks = sorted({r["check"] for r in hits})
+          summary = json.load(open("report/summary.json"))
+          print("B1 PROVEN: site-zip -> sibling visual-check -> report artifact intact; planted defect detected as %s across %d pages, %d violation rows total; advisory gate exited 0" % (checks, len(summary.get("pages", [])), len(rows)))
+          ASSERT_EOF
+
+      - name: Spike verdict
+        run: |
+          echo "spike-visual-check reusable chain + detection through the artifact path verified"
