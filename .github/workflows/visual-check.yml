@@ -22,7 +22,7 @@ on:
         description: 'ebpro/tooling-visual-qa ref to run (tag recommended). NOTE: v0.1.1 cannot launch a browser in-container — use v0.1.2+'
         required: false
         type: string
-        default: 'v0.1.2'
+        default: 'v0.1.3'
       gate:
         description: 'advisory = always exit 0 (counts reported); error = fail the job when any severity=error violation row exists'
         required: false
