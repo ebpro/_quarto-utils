@@ -811,7 +811,14 @@ jobs:
         # and a warning lands in the step summary.
         run: |
           set -uo pipefail
-          BYTES="$(du -sb "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+          # v1.3.28 (hotfix): du exits 1 when either cache dir is absent; under
+          # pipefail that failed status propagated through the command
+          # substitution and the step's default `bash -e` aborted the step
+          # BEFORE the BYTES=0 warning+skip branch (18 fleet runs died here
+          # post-upload with freeze=false). `|| true` inside the substitution
+          # keeps awk's sum (0 on total miss, real size on partial miss) and
+          # makes the empty-payload branch reachable again.
+          BYTES="$(du -sb "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" 2>/dev/null | awk '{s+=$1} END{print s+0}' || true)"
           CAP=$((900 * 1024 * 1024))
           MB=$((BYTES / 1024 / 1024))
           # v1.3.27 (cosmetic): sub-MiB payloads printed as "0 MiB" — show bytes instead.
