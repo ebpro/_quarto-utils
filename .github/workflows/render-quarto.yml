@@ -66,6 +66,11 @@ on:
         required: false
         type: number
         default: 60
+      freeze:
+        description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. Set false to force full cold execution.'
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
@@ -107,26 +112,213 @@ jobs:
       - name: Create compatibility symlink
         run: ln -s _quarto-utils quarto-utils
 
-      - name: Cache restore (validate)
+      # ------------------------------------------------------------------
+      # v1.3.25 — cell-output freeze cache (replaces the v1.3.x canary
+      # marker cache, which validated the actions/cache plumbing but cached
+      # nothing useful). Restore/save of the caller workspace's _freeze +
+      # .quarto under scope `quarto-freeze`, exact key:
+      #   qfreeze-v1-<runner.os>-<image digest>-<quarto version>-<snapshot>
+      # snapshot = sha256(caller HEAD + recursive submodule status), so any
+      # content change moves to a new exact key while the two restore-keys
+      # prefixes keep runs warm across content changes (digest-scoped).
+      # Render-level opt-in is the untracked runtime _metadata.yml
+      # (execute.freeze: auto) written below; _quarto.yml keeps #freeze
+      # commented and cache: true untouched (root _metadata.yml merges over
+      # the shared project config — precedence verified 2026-10-13).
+      # ------------------------------------------------------------------
+
+      - name: Freeze cache key (image pull, digest, quarto version, snapshot hash)
+        id: freeze-key
+        env:
+          QUARTO_IMAGE: ${{ inputs.quarto-image }}
+          EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
+        run: |
+          set -uo pipefail
+          # Best-effort local pull (with the same ghcr.io login the render
+          # step performs) so `docker image inspect` can resolve a
+          # RepoDigest on a cold runner. The render step pulls implicitly
+          # anyway, so a failure here is a warning, not a hard error.
+          if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "${EBPRO_CI_PAT:-}" ]; then
+            echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null 2>&1 || true
+          fi
+          docker pull -q "$QUARTO_IMAGE" >/dev/null 2>&1 \
+            || echo "::warning::freeze-key: docker pull of $QUARTO_IMAGE failed; falling back to the locally cached image (if any)"
+          # Image digest = the identity that actually executed the cells.
+          # The 'sha256:' prefix is stripped (actions/cache keys forbid
+          # ':' ',' '*'); anything outside [A-Za-z0-9._-] is slugified in
+          # both the digest and the tag fallback.
+          DIGEST_REF="$(docker image inspect --format '{{index .RepoDigests 0}}' "$QUARTO_IMAGE" 2>/dev/null || true)"
+          if [ -n "$DIGEST_REF" ]; then
+            DIGEST="${DIGEST_REF##*@}"
+          else
+            DIGEST="tag-$QUARTO_IMAGE"
+          fi
+          DIGEST="$(printf '%s' "$DIGEST" | tr -cs 'A-Za-z0-9._-' '-')"
+          DIGEST="${DIGEST%-}"
+          # Quarto version: frozen cell outputs are only portable across the
+          # same quarto build (freeze-file format assumptions). The solen CI
+          # images have no ENTRYPOINT and quarto is on PATH (verified against
+          # ghcr.io/ebpro/solen:quarto-full-build-20261010T172146Z).
+          QVER="$(docker run --rm "$QUARTO_IMAGE" quarto --version 2>/dev/null | tr -d '[:space:]' || true)"
+          [ -n "$QVER" ] || QVER="unknown"
+          QVER="$(printf '%s' "$QVER" | tr -cs 'A-Za-z0-9._-' '-')"
+          # Snapshot hash: caller HEAD + recursive submodule status. Both
+          # are tracked-state only, so untracked runtime files written
+          # later in this job (the _metadata.yml freeze override,
+          # quarto-exec.log) cannot influence the key.
+          SNAP_SRC="$(git rev-parse HEAD; git submodule status --recursive 2>/dev/null || true)"
+          SNAP="$(printf '%s' "$SNAP_SRC" | sha256sum | cut -d' ' -f1)"
+          {
+            echo "digest=$DIGEST"
+            echo "qver=$QVER"
+            echo "snap=$SNAP"
+          } >> "$GITHUB_OUTPUT"
+          echo "freeze key parts: digest=$DIGEST qver=$QVER snap=$SNAP"
+          {
+            echo "### Freeze cache key"
+            echo ""
+            echo '```'
+            echo "image    : $QUARTO_IMAGE"
+            echo "digest   : $DIGEST"
+            echo "quarto   : $QVER"
+            echo "snapshot : $SNAP"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cold re-run detection
+        id: cold-rerun
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          # Attempt > 1 means a previous attempt died mid-render, so the
+          # cache (and any workspace residue) may hold partial/corrupt
+          # cells: skip the restore (see the restore step's if) and re-run
+          # fully cold with maximum quarto diagnostics. RENDER_EXTRA_ARGS
+          # expands host-side into the container command of the render step.
+          if [ "${RUN_ATTEMPT:-1}" -gt 1 ]; then
+            echo "rerun=true" >> "$GITHUB_OUTPUT"
+            echo "RENDER_EXTRA_ARGS=--execute-debug --log-level debug" >> "$GITHUB_ENV"
+            echo "ℹ️ re-run (attempt ${RUN_ATTEMPT}): freeze cache restore skipped, quarto debug diagnostics enabled"
+          else
+            echo "rerun=false" >> "$GITHUB_OUTPUT"
+            echo "RENDER_EXTRA_ARGS=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Stale workspace guard (pre-restore clean)
+        # Self-hosted runner workspaces persist across runs and any residue
+        # would poison both the render and the hit-detection below, so wipe
+        # cacheable dirs and runtime metadata BEFORE the restore. This
+        # realises the design's "rm -rf _freeze .quarto on restore-miss (and
+        # always when freeze=false)" rule up-front with identical semantics:
+        # whatever survives the restore comes from the cache, never from a
+        # previous run.
+        run: |
+          set -uo pipefail
+          rm -rf "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto"
+          # Runtime freeze metadata hygiene: remove a stale UNTRACKED
+          # _metadata.yml left by an earlier run; restore a COMMITTED one to
+          # its tracked content in case an earlier run appended the freeze
+          # block to it (duplicate `execute:` keys would break the YAML).
+          if [ -f _metadata.yml ]; then
+            if git ls-files --error-unmatch _metadata.yml >/dev/null 2>&1; then
+              git checkout -- _metadata.yml 2>/dev/null || true
+            else
+              rm -f _metadata.yml
+            fi
+          fi
+          git status --porcelain=v1 | head -20 || true
+
+      - name: Freeze cache restore
         id: cache-restore
+        if: github.run_attempt == 1
+        # NOTE (v1.3.25 deviation): the design's `scope: quarto-freeze` is
+        # NOT implementable — actions/cache restore/save declare no `scope`
+        # input in any released version (verified against
+        # restore/action.yml + save/action.yml at refs v4 and v6, and a
+        # repo-wide code search). The cache service therefore scopes these
+        # entries to this caller workflow (the default), which is exactly
+        # the isolation the design wanted; keys stay collision-free via the
+        # qfreeze-v1- prefix.
         uses: actions/cache/restore@v4
         with:
-          path: /tmp/quarto-cache-canary
-          key: quarto-render-${{ runner.os }}-${{ inputs.quarto-image }}
+          path: |
+            ${{ github.workspace }}/_freeze
+            ${{ github.workspace }}/.quarto
+          key: qfreeze-v1-${{ runner.os }}-${{ steps.freeze-key.outputs.digest }}-${{ steps.freeze-key.outputs.qver }}-${{ steps.freeze-key.outputs.snap }}
           restore-keys: |
-            quarto-render-${{ runner.os }}-
+            qfreeze-v1-${{ runner.os }}-${{ steps.freeze-key.outputs.digest }}-${{ steps.freeze-key.outputs.qver }}-
+            qfreeze-v1-${{ runner.os }}-${{ steps.freeze-key.outputs.digest }}-
 
-      - name: Cache canary marker
+      - name: Freeze restore summary
+        id: restore-summary
         run: |
-          mkdir -p /tmp/quarto-cache-canary
-          if [ "${{ steps.cache-restore.outputs.cache-hit }}" = "true" ]; then
-            echo "✅ CACHE HIT — previous marker:"
-            cat /tmp/quarto-cache-canary/marker.txt
-          else
-            echo "ℹ️  CACHE MISS — first run for this key, will be saved"
+          set -uo pipefail
+          HIT='${{ steps.cache-restore.outputs.cache-hit }}'
+          MATCHED='${{ steps.cache-restore.outputs.cache-matched-key }}'
+          # cache-hit is 'true' only for an exact primary-key match and can
+          # be empty on a plain miss, so the classification also uses the
+          # restored dirs (reliable: the pre-restore clean wiped the
+          # workspace before the restore ran).
+          RESULT=miss
+          if [ "$HIT" = "true" ]; then
+            RESULT=exact
+          elif [ -d "$GITHUB_WORKSPACE/_freeze" ] || [ -d "$GITHUB_WORKSPACE/.quarto" ]; then
+            RESULT=partial
           fi
-          echo "ts=$(date -u +%Y%m%dT%H%M%SZ) run=${{ github.run_id }}" > /tmp/quarto-cache-canary/marker.txt
-          cat /tmp/quarto-cache-canary/marker.txt
+          if [ '${{ inputs.freeze }}' != 'true' ]; then
+            # freeze disabled for this run: restored cache data must not be
+            # used (design rule 4 — always rm when freeze=false).
+            rm -rf "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto"
+            RESULT=miss
+            echo "ℹ️ freeze=false — restored cache data wiped; full cold render"
+          fi
+          echo "restore-result=$RESULT" >> "$GITHUB_OUTPUT"
+          case "$RESULT" in
+            exact)   MSG="✅ CACHE HIT (exact key) — unchanged cells will not re-execute" ;;
+            partial) MSG="🟡 CACHE PARTIAL HIT via restore-keys — changed cells will re-execute" ;;
+            *)       MSG="ℹ️  CACHE MISS — first run for this key, will be saved on success" ;;
+          esac
+          echo "$MSG (matched-key: ${MATCHED:-<none>})"
+          {
+            echo "### Freeze cache restore"
+            echo ""
+            echo "$MSG"
+            echo ""
+            echo "- matched-key: \`${MATCHED:-<none>}\`"
+            echo "- primary-key: \`${{ steps.cache-restore.outputs.cache-primary-key }}\`"
+            echo ""
+            echo '```'
+            du -sh "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" 2>/dev/null || echo "(no cache dirs present)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enable runtime freeze (untracked _metadata.yml)
+        if: inputs.freeze == true && github.event_name != 'pull_request'
+        run: |
+          set -uo pipefail
+          # execute.freeze: auto = reuse frozen cell outputs, re-execute only
+          # cells whose content hash changed. Written as a RUNTIME-ONLY root
+          # _metadata.yml (never committed; invisible to the snapshot hash,
+          # which reads tracked state only). Quarto 1.10.18 has no
+          # `--freeze`-style CLI flag for project freeze (verified against
+          # the CI image: only `--use-freezer` for single-file incremental
+          # renders), so the config route is the supported mechanism.
+          if [ -f _metadata.yml ] && git ls-files --error-unmatch _metadata.yml >/dev/null 2>&1; then
+            # The repo commits its own root _metadata.yml (e.g. the English
+            # locale file in notebook-dev-web). Do NOT clobber it: append the
+            # freeze block only when the committed file doesn't define
+            # `execute:` itself; if it does, the repo owns execution policy.
+            if grep -qE '^execute:' _metadata.yml; then
+              echo "::notice::committed _metadata.yml already defines execute: — runtime freeze override skipped (repo owns execution policy)"
+            else
+              printf '\n# runtime freeze (CI-managed, workspace-only — do not treat as content)\nexecute:\n  freeze: auto\n' >> _metadata.yml
+              echo "✅ appended execute.freeze: auto to committed _metadata.yml (dirty in the workspace only; never pushed)"
+            fi
+          else
+            printf 'execute:\n  freeze: auto\n' > _metadata.yml
+            echo "✅ wrote untracked runtime _metadata.yml (execute.freeze: auto)"
+          fi
+          cat _metadata.yml
 
       - name: Detect Docker socket
         run: |
@@ -271,12 +463,21 @@ jobs:
           IFS=',' read -ra PROFILE_LIST <<< "$PROFILES"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
+            # --log: always write quarto's log into the workspace (mounted at
+            # /workdir INSIDE the container — $GITHUB_WORKSPACE is a host path
+            # that does not exist in the container, so the flag value is the
+            # in-container mount point; the file lands at
+            # $GITHUB_WORKSPACE/quarto-exec.log on the host and is uploaded by
+            # the "Upload quarto execution log" step on failure).
+            # RENDER_EXTRA_ARGS: '--execute-debug --log-level debug' on a cold
+            # re-run (attempt > 1), empty otherwise (set by the
+            # "Cold re-run detection" step).
             docker run --rm $DOCKER_MOUNTS --name "$RENDER_CONTAINER" \
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "${DOCKER_ARGS[@]}" \
               "$QUARTO_IMAGE" \
-              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p'$BASEURL_ARG"
+              bash -lc "source /home/jovyan/.sdkman/bin/sdkman-init.sh 2>/dev/null || source \$HOME/.sdkman/bin/sdkman-init.sh 2>/dev/null || true; quarto render --profile '$p' --log /workdir/quarto-exec.log${RENDER_EXTRA_ARGS:+ $RENDER_EXTRA_ARGS}$BASEURL_ARG"
           done
 
       - name: Export slides PDF (decktape)
@@ -556,13 +757,73 @@ jobs:
           path: site-zip.zip
           retention-days: 7
 
-      - name: Cache save (validate)
-        if: always()
+      - name: Upload quarto execution log
+        # Design rule 6: the quarto --log file is uploaded whenever the run
+        # fails (render, packaging, or any later hard failure). Placed after
+        # the site upload so a successful render also reaches this step while
+        # the job is still green (no-op there); if-no-files-found guards the
+        # early-failure case where quarto never started.
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: quarto-exec-log
+          path: quarto-exec.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Freeze cache size gate
+        id: freeze-size
+        # Save policy (design rule 7): never push a bloated payload into the
+        # org-wide cache pool. du -sb = apparent bytes of the two cached
+        # dirs; cap = 900 MiB (900*1024*1024). Breach -> save step is skipped
+        # and a warning lands in the step summary.
+        run: |
+          set -uo pipefail
+          BYTES="$(du -sb "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+          CAP=$((900 * 1024 * 1024))
+          MB=$((BYTES / 1024 / 1024))
+          echo "bytes=$BYTES" >> "$GITHUB_OUTPUT"
+          if [ "$BYTES" -gt 0 ] && [ "$BYTES" -lt "$CAP" ]; then
+            echo "under_cap=true" >> "$GITHUB_OUTPUT"
+            echo "✅ freeze cache payload ${MB} MiB (>0, < 900 MiB cap) — save allowed"
+          else
+            echo "under_cap=false" >> "$GITHUB_OUTPUT"
+            if [ "$BYTES" -eq 0 ]; then
+              echo "::warning::freeze cache payload is empty (no _freeze/.quarto content) — skipping cache save"
+            else
+              echo "::warning::freeze cache payload ${MB} MiB >= 900 MiB cap — skipping cache save"
+            fi
+            {
+              echo "### ⚠️ Freeze cache save skipped"
+              echo ""
+              echo "Cache payload (\`du -sb _freeze .quarto\`) is ${MB} MiB — outside the (0, 900 MiB) save window; nothing saved."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Freeze cache save
+        # Explicit success condition (replaces the old canary `if: always()`).
+        # Save only when ALL hold: job green; push to the caller's default
+        # branch; the freeze mechanism is on; the restore did NOT hit the
+        # exact key (cache-hit != 'true' — a green exact-hit run has nothing
+        # new to store, and re-saving the same key would collide); payload
+        # inside the size window. A re-run (restore skipped) has an empty
+        # cache-hit output and therefore may save; a collide-with-existing-key
+        # save fails harmlessly under continue-on-error.
+        if: >-
+          success() &&
+          inputs.freeze == true &&
+          github.event_name == 'push' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          steps.cache-restore.outputs.cache-hit != 'true' &&
+          steps.freeze-size.outputs.under_cap == 'true'
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
-          path: /tmp/quarto-cache-canary
-          key: quarto-render-${{ runner.os }}-${{ inputs.quarto-image }}
+          path: |
+            ${{ github.workspace }}/_freeze
+            ${{ github.workspace }}/.quarto
+          key: qfreeze-v1-${{ runner.os }}-${{ steps.freeze-key.outputs.digest }}-${{ steps.freeze-key.outputs.qver }}-${{ steps.freeze-key.outputs.snap }}
 
   deploy-static:
     needs: render
