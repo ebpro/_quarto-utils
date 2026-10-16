@@ -42,5 +42,4 @@ filters:
    - code-visibility
 
 extensions:
-    - _extensions/kazuyanagimoto/clean
     - _extensions/grantmcdermott/clean  
