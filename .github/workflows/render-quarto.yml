@@ -47,10 +47,10 @@ on:
         type: boolean
         default: false
       render-timeout-minutes:
-        description: 'Hard cap (minutes) on the "Render with Quarto (Docker)" step. Default 60 = previous behaviour. Raise per-wrapper only for known-slow content (e.g. DEV-ADV 90).'
+        description: 'Hard cap (minutes) on the "Render with Quarto (Docker)" step. Default 75 (v1.3.30, was 60: containers-intro-class hung at the 60-min ceiling on a slow-pull day). Raise per-wrapper only for known-slow content (e.g. DEV-ADV 90).'
         required: false
         type: number
-        default: 60
+        default: 75
       freeze:
         description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. v1.3.27: default switched to FALSE — pins must not silently adopt the freeze machinery; wrappers opt in explicitly with `freeze: true`. Set false (default) to force full cold execution.'
         required: false
@@ -114,6 +114,10 @@ jobs:
 
       - name: Freeze cache key (image pull, digest, quarto version, snapshot hash)
         id: freeze-key
+        # v1.3.30 (freeze machinery guard): skip entirely when freeze=false —
+        # the docker pull/inspect/run and the summary section are pure
+        # overhead for a cold render (fleet leak: jpa run 38849308298).
+        if: inputs.freeze == true
         env:
           QUARTO_IMAGE: ${{ inputs.quarto-image }}
           EBPRO_CI_PAT: ${{ secrets.EBPRO_CI_PAT }}
@@ -215,7 +219,10 @@ jobs:
 
       - name: Freeze cache restore
         id: cache-restore
-        if: github.run_attempt == 1
+        # v1.3.30: was `if: github.run_attempt == 1` only — restore fired under
+        # freeze:false, downloaded the cache (runtime "Cache hit for restore-key:
+        # qfreeze-…") and restore-summary wiped it. Gate on the freeze input.
+        if: inputs.freeze == true && github.run_attempt == 1
         # NOTE (v1.3.25 deviation): the design's `scope: quarto-freeze` is
         # NOT implementable — actions/cache restore/save declare no `scope`
         # input in any released version (verified against
@@ -236,6 +243,7 @@ jobs:
 
       - name: Freeze restore summary
         id: restore-summary
+        if: inputs.freeze == true
         run: |
           set -uo pipefail
           HIT='${{ steps.cache-restore.outputs.cache-hit }}'
@@ -805,6 +813,7 @@ jobs:
 
       - name: Freeze cache size gate
         id: freeze-size
+        if: inputs.freeze == true
         # Save policy (design rule 7): never push a bloated payload into the
         # org-wide cache pool. du -sb = apparent bytes of the two cached
         # dirs; cap = 900 MiB (900*1024*1024). Breach -> save step is skipped
