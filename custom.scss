@@ -25,10 +25,12 @@ $label-top-gap: 1.6rem; // espace laissé en haut du bloc pour le label
 }
 
 /* ::before for input label — same narrow selectors so only one pseudo-element per cell */
-.cell > .code-copy-outer-scaffold > .sourceCode.cell-code::before,
-.cell > .sourceCode.cell-code::before,
-.cell > pre.sourceCode:first-of-type::before,
-.cell > .cell-code:first-of-type::before {
+// Badge "Input" — OPT-IN : la classe `.labeled` doit être portée par un conteneur
+// ancêtre de la cellule (ex. wrapper `::: {.labeled} … :::` autour de la cellule).
+.labeled .cell > .code-copy-outer-scaffold > .sourceCode.cell-code::before,
+.labeled .cell > .sourceCode.cell-code::before,
+.labeled .cell > pre.sourceCode:first-of-type::before,
+.labeled .cell > .cell-code:first-of-type::before {
   content: "Input";
   position: absolute;
   left: 0.6rem;
@@ -83,16 +85,18 @@ div.cell-output {
   }
 }
 
-.cell > .output_area::before,
-.cell > .output::before,
-.cell.output::before,
-div.output::before,
-.output_area::before,
-.rendered_html::before,
-.quarto-output::before,
-.html-widget::before,
-.figure::before,
-div.cell-output::before {
+// Badge "Output" — OPT-IN : la classe `.labeled` doit être portée par un conteneur
+// ancêtre de la cellule (ex. wrapper `::: {.labeled} … :::` autour de la cellule).
+.labeled .cell > .output_area::before,
+.labeled .cell > .output::before,
+.labeled .cell.output::before,
+.labeled div.output::before,
+.labeled .output_area::before,
+.labeled .rendered_html::before,
+.labeled .quarto-output::before,
+.labeled .html-widget::before,
+.labeled .figure::before,
+.labeled div.cell-output::before {
   content: "Output";
   position: absolute;
   left: 0.6rem;
