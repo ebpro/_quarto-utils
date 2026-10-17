@@ -540,7 +540,12 @@ jobs:
             # RENDER_EXTRA_ARGS: '--execute-debug --log-level debug' on a cold
             # re-run (attempt > 1), empty otherwise (set by the
             # "Cold re-run detection" step).
+            # v1.3.32: the ebpro-render=true label makes this container visible to
+            # BOTH label consumers below (watchdog forensics 'docker ps -a --filter
+            # label=ebpro-render=true' and the EXIT-trap sweep arm). Without it both
+            # were dead no-ops (hang-report.txt 2026-10-17: header + zero rows).
             docker run --rm $DOCKER_MOUNTS --name "$RENDER_CONTAINER" \
+              --label ebpro-render=true \
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "${DOCKER_ARGS[@]}" \
