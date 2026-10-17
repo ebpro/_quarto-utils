@@ -1,3 +1,4 @@
+# v1.3.31-candidate: hang watchdog for the render step (input hang-detection-minutes, default 0 = off).
 name: Render Quarto Documents (reusable)
 
 defaults:
@@ -51,6 +52,11 @@ on:
         required: false
         type: number
         default: 75
+      hang-detection-minutes:
+        description: 'v1.3.31-candidate: inactivity cap (minutes) on the render stream log (hang watchdog sidecar). 0 (default) = disabled, zero blast radius. Must be < render-timeout-minutes. Raise per-repo only for known long-silent-cell content; converts a 75-min blind hang into a fast, forensically-annotated failure.'
+        required: false
+        type: number
+        default: 0
       freeze:
         description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. v1.3.27: default switched to FALSE — pins must not silently adopt the freeze machinery; wrappers opt in explicitly with `freeze: true`. Set false (default) to force full cold execution.'
         required: false
@@ -367,7 +373,9 @@ jobs:
           # Keep the existing render-container removal, plus a best-effort sweep of
           # any lecture containers this run left behind (label=ebpro-render=true).
           # Both removals are non-fatal (|| true) so cleanup never masks the render result.
-          trap 'docker rm -f "$RENDER_CONTAINER" >/dev/null 2>&1 || true; docker ps -aq --filter "label=ebpro-render=true" | xargs -r docker rm -f || true' EXIT
+          # v1.3.31-candidate (hang watchdog): appended kill arm (kill first so the
+          # sidecar can no longer act during teardown); original cleanup arms unchanged.
+          trap 'kill "${WATCHDOG_PID:-}" 2>/dev/null || true; docker rm -f "$RENDER_CONTAINER" >/dev/null 2>&1 || true; docker ps -aq --filter "label=ebpro-render=true" | xargs -r docker rm -f || true' EXIT
           if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "$EBPRO_CI_PAT" ]; then
             echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           fi
@@ -460,6 +468,67 @@ jobs:
           # this file accumulates across all of them.)
           RENDER_LOG="$GITHUB_WORKSPACE/render-output.log"
           rm -f "$RENDER_LOG"
+          # --- v1.3.31-candidate: hang watchdog (input hang-detection-minutes, 0=off) ---
+          # Inactivity cap on the render stream: liveness = max mtime of RENDER_LOG and
+          # quarto-exec.log; on sustained silence the sidecar dumps forensics, emits a
+          # ::error::HANG-DETECTED annotation and docker-kills the render container so
+          # `docker run` exits non-zero. The PIPESTATUS branch below stays the SOLE
+          # step-status decider (subshell runs `set +e`, every probe `|| true`; the
+          # guarded if keeps the main `bash -e` shell inert when the feature is off).
+          HANG_MIN="${{ inputs.hang-detection-minutes }}"
+          WATCHDOG_PID=""
+          if [ -n "$HANG_MIN" ] && [ "$HANG_MIN" != "0" ]; then
+            echo ">> Hang watchdog armed: ${HANG_MIN}-min inactivity cap (container: $RENDER_CONTAINER)"
+            (
+              set +e
+              LIMIT=$(( HANG_MIN * 60 ))
+              FORENSICS_DIR="$GITHUB_WORKSPACE/hang-forensics"
+              mkdir -p "$FORENSICS_DIR"
+              DEADLINE=$(( $(date +%s) + LIMIT ))
+              while true; do
+                sleep 30
+                NOW=$(date +%s)
+                LOG_MTIME=0
+                for f in "$RENDER_LOG" "$GITHUB_WORKSPACE/quarto-exec.log"; do
+                  [ -e "$f" ] || continue
+                  M=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+                  [ "$M" -gt "$LOG_MTIME" ] && LOG_MTIME=$M
+                done
+                if [ "$LOG_MTIME" -eq 0 ]; then
+                  DEADLINE=$(( NOW + LIMIT ))  # no log yet: keep resetting (pull/startup grace)
+                  continue
+                fi
+                DEADLINE=$(( LOG_MTIME + LIMIT ))
+                [ "$NOW" -le "$DEADLINE" ] && continue
+                SILENT_MIN=$(( (NOW - LOG_MTIME) / 60 ))
+                PAGE=$(sed 's/\x1b\[[0-9;]*m//g' "$RENDER_LOG" 2>/dev/null | grep -oE '\[[0-9]+/[0-9]+\]' | tail -1)
+                [ -n "$PAGE" ] || PAGE="unknown"
+                echo "::error::HANG-DETECTED after ${SILENT_MIN} min inactivity at page ${PAGE}"
+                {  # forensics BEFORE kill
+                  echo "=== hang-forensics $(date -Is): ${SILENT_MIN} min silent, page ${PAGE} ==="
+                  echo '--- ps -ef (quarto|docker|jupyter) ---'
+                  ps -ef | grep -E 'quarto|docker|jupyter' | grep -v grep || true
+                  echo '--- docker ps -a (label=ebpro-render=true) ---'
+                  docker ps -a --filter label=ebpro-render=true || true
+                  echo "--- docker inspect $RENDER_CONTAINER ---"
+                  docker inspect --format '{{.State.Status}} started={{.State.StartedAt}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}}' "$RENDER_CONTAINER" || true
+                  echo '--- in-container process list (ps, /proc cmdline fallback) ---'
+                  docker exec "$RENDER_CONTAINER" ps -ef 2>/dev/null || docker exec "$RENDER_CONTAINER" sh -c 'for d in /proc/[0-9]*; do printf "%s " "${d#/proc/}"; tr "\0" " " < "$d/cmdline" 2>/dev/null; echo; done' 2>/dev/null || true
+                  echo '--- kernel log tails (in-container) ---'
+                  docker exec "$RENDER_CONTAINER" bash -lc 'tail -n 40 /tmp/*kernel*.log /home/jovyan/.local/share/jupyter/log/* 2>/dev/null' || true
+                  echo "--- tail -n 40 $RENDER_LOG ---"
+                  tail -n 40 "$RENDER_LOG" || true
+                  echo '--- ls -la _freeze .quarto ---'
+                  ls -la "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" || true
+                } > "$FORENSICS_DIR/hang-report.txt" 2>&1
+                cat "$FORENSICS_DIR/hang-report.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+                docker kill "$RENDER_CONTAINER" >/dev/null 2>&1 || true
+                echo "$PAGE" > "$GITHUB_WORKSPACE/.hang-detected" 2>/dev/null || true
+                break
+              done
+            ) &
+            WATCHDOG_PID=$!
+          fi
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
             # --log: always write quarto's log into the workspace (mounted at
@@ -486,6 +555,10 @@ jobs:
               exit "$pipe_status"
             fi
           done
+          # v1.3.31-candidate: success path — disarm the watchdog (EXIT trap covers failures).
+          if [ -n "${WATCHDOG_PID:-}" ]; then
+            kill "$WATCHDOG_PID" 2>/dev/null || true
+          fi
 
       - name: Listing-warn gate
         # v1.3.27: fail the render when Quarto emitted an empty-listing WARN
@@ -807,7 +880,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: quarto-exec-log
-          path: quarto-exec.log
+          # v1.3.31-candidate: hang-forensics/ rides along when present (ignore semantics).
+          path: |
+            quarto-exec.log
+            hang-forensics/
           if-no-files-found: ignore
           retention-days: 7
 
