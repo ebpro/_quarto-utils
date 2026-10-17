@@ -598,6 +598,10 @@ jobs:
         # deploy-static rsync (whole unpacked site) with zero changes to them.
         # Slides profile output dir: _output/_slides (_quarto-slides.yml
         # `output-dir: _output/_slides`), decks nested by lesson dir as *_L_*.html.
+        # Multi-format documents also emit plain Bootstrap *_L_*.html pages in
+        # the same tree: each candidate is content-sniffed for the Reveal
+        # container (<div class="reveal") before decktape runs; non-decks are
+        # skipped (decktape reveal on them only fails "Reveal is not defined").
         #
         # Environment split discovered on canary run #37: this step executes on
         # the RUNNER HOST (bash --noprofile --norc -e -o pipefail), while node/
@@ -727,6 +731,11 @@ jobs:
           failures=0
           for deck in "${decks[@]}"; do
             rel="${deck#./}"
+            # Reveal content sniff: skip *_L_*.html pages that are not decks.
+            if ! grep -qF '<div class="reveal"' "$deck"; then
+              echo ">> skipping $rel (not a revealjs deck)"
+              continue
+            fi
             url_rel=$(printf '%s' "$rel" | sed 's/ /%20/g')
             out="/site/pdf/${rel%.html}.pdf"
             mkdir -p "$(dirname "$out")"
@@ -817,6 +826,11 @@ jobs:
           failures=0
           for deck in "${decks[@]}"; do
             rel="${deck#./}"
+            # Reveal content sniff: skip *_L_*.html pages that are not decks.
+            if ! grep -qF '<div class="reveal"' "$deck"; then
+              echo ">> skipping $rel (not a revealjs deck)"
+              continue
+            fi
             url_rel=$(printf '%s' "$rel" | sed 's/ /%20/g')
             out="$SITE_OUT/pdf/${rel%.html}.pdf"
             mkdir -p "$(dirname "$out")"
