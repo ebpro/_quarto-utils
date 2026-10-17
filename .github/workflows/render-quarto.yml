@@ -444,6 +444,18 @@ jobs:
               refs/tags/*)
                 echo "::notice::deploy-static: tag non-v '${GITHUB_REF#refs/tags/}' ignoré — rendu sans baseurl (pas de déploiement, règle v1.3.22)"
                 ;;
+              refs/pull/*)
+                # v1.3.32: un événement pull_request (refs/pull/N/merge|head) est un
+                # contexte NON déployé — le job deploy-static n'exécute déjà que sur
+                # push/delete (if: github.event_name == 'push' || 'delete'). Le `*)`
+                # hérité de la règle v1.3.22 faisait exit 1 sur ces refs, donc ROUGE
+                # systématique (fake red) sur toute l'auto-CI de _quarto-utils et sur
+                # tout wrapper appelant en pull_request (cas documenté: PR #27,
+                # 'refs/pull/27/merge' -> ::error + exit 1 dans le step render).
+                # Même traitement que tag non-v : avis + rendu SANS override baseurl
+                # (SUBPATH vide -> branche « rendu sans override » ci-dessous).
+                echo "::warning::deploy-static=true mais GITHUB_REF '$GITHUB_REF' est un événement pull_request (contexte non déployé) — rendu sans override baseurl"
+                ;;
               *)
                 echo "::error::deploy-static=true mais GITHUB_REF '$GITHUB_REF' n'est ni une branche ni un tag; rendu avec baseurl refusé"
                 exit 1
