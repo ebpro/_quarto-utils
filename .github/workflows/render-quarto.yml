@@ -514,8 +514,18 @@ jobs:
                   docker inspect --format '{{.State.Status}} started={{.State.StartedAt}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}}' "$RENDER_CONTAINER" || true
                   echo '--- in-container process list (ps, /proc cmdline fallback) ---'
                   docker exec "$RENDER_CONTAINER" ps -ef 2>/dev/null || docker exec "$RENDER_CONTAINER" sh -c 'for d in /proc/[0-9]*; do printf "%s " "${d#/proc/}"; tr "\0" " " < "$d/cmdline" 2>/dev/null; echo; done' 2>/dev/null || true
-                  echo '--- kernel log tails (in-container) ---'
-                  docker exec "$RENDER_CONTAINER" bash -lc 'tail -n 40 /tmp/*kernel*.log /home/jovyan/.local/share/jupyter/log/* 2>/dev/null' || true
+                  # v1.3.32: replaced the old 'kernel log tails' probe (/tmp/*kernel*.log,
+                  # ~/.local/share/jupyter/log/*), structurally ALWAYS empty: quarto spawns
+                  # kernels via /tmp connection files without --log-file, so no kernel log
+                  # file ever exists in the render container (proven on 3 live captures).
+                  # Observed hang signature is an idle chrome-headless-shell, so capture the
+                  # headless-chromium profile dirs and singleton locks instead. 'docker logs'
+                  # was evaluated and deliberately SKIPPED as a pure content duplicate of the
+                  # tee'd RENDER_LOG (container stdio is double-sunk: client pipe + daemon
+                  # json-file; local test 2026-10-17: same lines both sides, interleaving
+                  # order only); the 'tail -n 40 $RENDER_LOG' below already covers it.
+                  echo '--- chrome profile dirs + singleton locks (in-container) ---'
+                  docker exec "$RENDER_CONTAINER" bash -lc 'ls -lad /tmp/.org.chromium.* /tmp/*hrome* 2>/dev/null; find /tmp -maxdepth 2 -name "SingletonLock" -exec ls -la {} \; 2>/dev/null' || true
                   echo "--- tail -n 40 $RENDER_LOG ---"
                   tail -n 40 "$RENDER_LOG" || true
                   echo '--- ls -la _freeze .quarto ---'
