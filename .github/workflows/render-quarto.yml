@@ -94,6 +94,14 @@ jobs:
       # Empty if the upload step did not run or failed (purge self-skips then
       # and the 1-day retention floor reclaims the space).
       site-artifact-id: ${{ steps.upload-site.outputs.artifact-id }}
+      # Staging handoff (Model B): empty while site-transport=artifact (the
+      # gated staging steps never run) — purely additive, no existing consumer
+      # reads these. staging-zip is redundancy only; deploy-side consumers MUST
+      # re-derive paths from staging-dir (validated at both ends).
+      staging-dir: ${{ steps.staging-export.outputs.staging-dir }}
+      staging-zip: ${{ steps.staging-export.outputs.staging-zip }}
+      staging-sha256: ${{ steps.staging-export.outputs.staging-sha256 }}
+      staging-ready: ${{ steps.staging-export.outputs.staging-ready }}
     steps:
       - name: Checkout repository (caller) with submodules
         uses: actions/checkout@v4
@@ -1070,6 +1078,95 @@ jobs:
             scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$LOCAL_ZIP" "bruno@vai.univ-tln.fr:$STAGING_DIR/site.zip"
           fi
           echo "✅ site.zip pushed to staging: $STAGING_DIR/site.zip"
+
+      - name: Verify remote digest
+        # Attestation: the zip that landed on vai must be byte-identical to the
+        # locally packaged one. Mismatch => RED, NO fallback (a divergent
+        # staging payload is a poisoning suspicion, not a soft condition). The
+        # always() key cleanup below still runs on the failure.
+        id: staging-verify
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          KEY: ${{ steps.staging-key.outputs.key-path }}
+          STAGING_DIR: ${{ steps.guard.outputs.staging-dir }}
+        run: |
+          set -euo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR"
+          LOCAL_ZIP="$GITHUB_WORKSPACE/site-zip.zip"
+          LOCAL_SHA="$(sha256sum "$LOCAL_ZIP" | awk '{print $1}')"
+          if [[ ! "$LOCAL_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Local digest malformed (expected 64 hex): '$LOCAL_SHA'"
+            exit 1
+          fi
+          REMOTE_SHA="$(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "sha256sum \"$STAGING_DIR/site.zip\"" | awk '{print $1}')"
+          if [[ ! "$REMOTE_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Remote digest unreadable or malformed (expected 64 hex): '$REMOTE_SHA' — cannot attest the staging upload"
+            exit 1
+          fi
+          if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+            echo "::error::digest mismatch staging — suspicion d'empoisonnement: local=$LOCAL_SHA remote=$REMOTE_SHA (dir=$STAGING_DIR). Rouge sans fallback."
+            exit 1
+          fi
+          echo "sha256=$LOCAL_SHA" >> "$GITHUB_OUTPUT"
+          echo "✅ remote staging digest attested: $LOCAL_SHA"
+
+      - name: Export staging outputs
+        # Consumes ONLY re-validated values (guard output + attested digest).
+        # staging-zip is redundancy for humans/forensics; the deploy side must
+        # re-derive the remote path from staging-dir (never interpolate this).
+        id: staging-export
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          STAGING_DIR: ${{ steps.guard.outputs.staging-dir }}
+          SHA256: ${{ steps.staging-verify.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR"
+          if [[ ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::staging sha256 missing or malformed — refusing to advertise a non-attested upload"
+            exit 1
+          fi
+          {
+            echo "staging-dir=$STAGING_DIR"
+            echo "staging-zip=$STAGING_DIR/site.zip"
+            echo "staging-sha256=$SHA256"
+            echo "staging-ready=true"
+          } >> "$GITHUB_OUTPUT"
+          echo "✅ staging outputs exported (staging-ready=true, digest attested)"
 
       - name: Clean up staging key
         # always() is CRITICAL (spec §1.1-7 / P1-3): the private key must be removed
