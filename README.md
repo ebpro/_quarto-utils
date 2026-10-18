@@ -443,3 +443,5 @@ git submodule update --init --recursive _quarto-utils
 ## 📄 Licence
 
 CC BY-NC - Voir le fichier LICENSE du projet parent.
+
+<!-- diag: PR-event startup_failure isolation probe (no-op) -->
