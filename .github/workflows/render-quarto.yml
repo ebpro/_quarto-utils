@@ -63,6 +63,11 @@ on:
         required: false
         type: boolean
         default: false
+      site-transport:
+        description: 'Handoff render to deploy: artifact | staging | both. staging = vai ~/teaching-staging (quota-immune); both = dual-write transition; default artifact = inert (existing behavior unchanged).'
+        required: false
+        type: string
+        default: 'artifact'
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
@@ -89,6 +94,14 @@ jobs:
       # Empty if the upload step did not run or failed (purge self-skips then
       # and the 1-day retention floor reclaims the space).
       site-artifact-id: ${{ steps.upload-site.outputs.artifact-id }}
+      # Staging handoff (Model B): empty while site-transport=artifact (the
+      # gated staging steps never run) — purely additive, no existing consumer
+      # reads these. staging-zip is redundancy only; deploy-side consumers MUST
+      # re-derive paths from staging-dir (validated at both ends).
+      staging-dir: ${{ steps.staging-export.outputs.staging-dir }}
+      staging-zip: ${{ steps.staging-export.outputs.staging-zip }}
+      staging-sha256: ${{ steps.staging-export.outputs.staging-sha256 }}
+      staging-ready: ${{ steps.staging-export.outputs.staging-ready }}
     steps:
       - name: Checkout repository (caller) with submodules
         uses: actions/checkout@v4
@@ -923,6 +936,251 @@ jobs:
           print(f'Created zip: {os.path.getsize(\"${{ github.workspace }}/site-zip.zip\")} bytes')
           "
 
+      - name: Guard staging path
+        # Staging handoff (Model B) — emitter-side path guard. Validates EVERY
+        # path segment BEFORE any step interpolates it into a remote path.
+        # Downstream staging steps MUST consume steps.guard.outputs.* (the
+        # validated values) — never a raw input/env. Prefix `teaching-staging`
+        # is LITERAL; the dir stays relative to the deploy user's home
+        # (no /home/... hardcoded here).
+        id: guard
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          SITE_TRANSPORT: ${{ inputs.site-transport }}
+        run: |
+          set -euo pipefail
+          case "$SITE_TRANSPORT" in
+            artifact|staging|both) ;;
+            *)
+              echo "::error::Invalid site-transport '$SITE_TRANSPORT' — expected one of: artifact | staging | both (no fallback)"
+              exit 1
+              ;;
+          esac
+          validate_segment() {
+            local name="$1" seg="$2"
+            if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+               && [[ "$seg" != "." && "$seg" != ".." ]] \
+               && [[ "$seg" != .* && "$seg" != -* ]]; then
+              return 0
+            fi
+            echo "::error::Invalid staging path segment $name='$seg' — must match ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$ (cap 100, no leading . or -), must not be '.' or '..'"
+            return 1
+          }
+          REPO="$(basename "$GITHUB_REPOSITORY")"
+          RUN_ID="$GITHUB_RUN_ID"
+          ATTEMPT="$GITHUB_RUN_ATTEMPT"
+          validate_segment REPO "$REPO"
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::GITHUB_RUN_ID is not numeric: '$RUN_ID'"; exit 1; }
+          [[ "$ATTEMPT" =~ ^[0-9]+$ ]] || { echo "::error::GITHUB_RUN_ATTEMPT is not numeric: '$ATTEMPT'"; exit 1; }
+          RUN_DIR="$RUN_ID-$ATTEMPT"
+          validate_segment RUN_DIR "$RUN_DIR"
+          STAGING_DIR="teaching-staging/$REPO/$RUN_DIR"
+          {
+            echo "repo=$REPO"
+            echo "run-dir=$RUN_DIR"
+            echo "staging-dir=$STAGING_DIR"
+          } >> "$GITHUB_OUTPUT"
+          echo "✅ staging path validated — target (relative to deploy home): $STAGING_DIR"
+
+      - name: Staging key material
+        # Mirrors the deploy job's "Write SSH key" pattern (mktemp + printf + chmod 600,
+        # secret only via env, never echoed). Key path exported as an OUTPUT so the
+        # mid-block staging steps and the cleanup step resolve the SAME file; the key
+        # window is closed by "Clean up staging key" (if: always()) below — Turn C will
+        # insert Ensure dir / Push / Verify digest / Export outputs between them.
+        id: staging-key
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$TEACHING_DEPLOY_SSH_KEY" ]; then
+            echo "::error::Le secret TEACHING_DEPLOY_SSH_KEY n'est pas défini ou n'est pas visible par ce dépôt ; staging impossible"
+            exit 1
+          fi
+          KEY="$(mktemp /tmp/teaching-staging-key.XXXXXX)"
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          echo "key-path=$KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure staging dir
+        # Receiver-side mirror of the guard: steps.guard.outputs.staging-dir is
+        # RE-VALIDATED per segment before ANY use (never a raw output). The
+        # remote command is DOUBLE-QUOTED with LOCAL expansion of the validated
+        # path + escaped inner quotes — never single-quoted (that would leak
+        # $vars to the remote shell, spec P2-8). Prefix `teaching-staging`
+        # literal, home-relative (no /home/... here). Failure => red.
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          KEY: ${{ steps.staging-key.outputs.key-path }}
+          STAGING_DIR: ${{ steps.guard.outputs.staging-dir }}
+        run: |
+          set -euo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR"
+          ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "mkdir -p \"$STAGING_DIR\""
+          echo "✅ staging dir ready: $STAGING_DIR"
+
+      - name: Push site to staging
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          KEY: ${{ steps.staging-key.outputs.key-path }}
+          STAGING_DIR: ${{ steps.guard.outputs.staging-dir }}
+        run: |
+          set -euo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR"
+          LOCAL_ZIP="$GITHUB_WORKSPACE/site-zip.zip"
+          if [ ! -f "$LOCAL_ZIP" ]; then
+            echo "::error::Local site-zip not found: $LOCAL_ZIP — Package rendered output must produce it before the staging push"
+            exit 1
+          fi
+          # Transport: rsync primary, scp fallback — the render container is NOT
+          # guaranteed rsync (same posture as the deploy job's "Ensure rsync"
+          # step); openssh scp is present wherever the ssh key works. A FAILING
+          # transport stays red (set -e): the fallback covers tool ABSENCE only,
+          # never a failed transfer (no silent artifact-only degradation here).
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -az -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "$LOCAL_ZIP" "bruno@vai.univ-tln.fr:$STAGING_DIR/site.zip"
+          else
+            echo "::notice::rsync absent from the render container — scp fallback (same validated destination)"
+            scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$LOCAL_ZIP" "bruno@vai.univ-tln.fr:$STAGING_DIR/site.zip"
+          fi
+          echo "✅ site.zip pushed to staging: $STAGING_DIR/site.zip"
+
+      - name: Verify remote digest
+        # Attestation: the zip that landed on vai must be byte-identical to the
+        # locally packaged one. Mismatch => RED, NO fallback (a divergent
+        # staging payload is a poisoning suspicion, not a soft condition). The
+        # always() key cleanup below still runs on the failure.
+        id: staging-verify
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          KEY: ${{ steps.staging-key.outputs.key-path }}
+          STAGING_DIR: ${{ steps.guard.outputs.staging-dir }}
+        run: |
+          set -euo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR"
+          LOCAL_ZIP="$GITHUB_WORKSPACE/site-zip.zip"
+          LOCAL_SHA="$(sha256sum "$LOCAL_ZIP" | awk '{print $1}')"
+          if [[ ! "$LOCAL_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Local digest malformed (expected 64 hex): '$LOCAL_SHA'"
+            exit 1
+          fi
+          REMOTE_SHA="$(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "sha256sum \"$STAGING_DIR/site.zip\"" | awk '{print $1}')"
+          if [[ ! "$REMOTE_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Remote digest unreadable or malformed (expected 64 hex): '$REMOTE_SHA' — cannot attest the staging upload"
+            exit 1
+          fi
+          if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+            echo "::error::digest mismatch staging — suspicion d'empoisonnement: local=$LOCAL_SHA remote=$REMOTE_SHA (dir=$STAGING_DIR). Rouge sans fallback."
+            exit 1
+          fi
+          echo "sha256=$LOCAL_SHA" >> "$GITHUB_OUTPUT"
+          echo "✅ remote staging digest attested: $LOCAL_SHA"
+
+      - name: Export staging outputs
+        # Consumes ONLY re-validated values (guard output + attested digest).
+        # staging-zip is redundancy for humans/forensics; the deploy side must
+        # re-derive the remote path from staging-dir (never interpolate this).
+        id: staging-export
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          STAGING_DIR: ${{ steps.guard.outputs.staging-dir }}
+          SHA256: ${{ steps.staging-verify.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR"
+          if [[ ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::staging sha256 missing or malformed — refusing to advertise a non-attested upload"
+            exit 1
+          fi
+          {
+            echo "staging-dir=$STAGING_DIR"
+            echo "staging-zip=$STAGING_DIR/site.zip"
+            echo "staging-sha256=$SHA256"
+            echo "staging-ready=true"
+          } >> "$GITHUB_OUTPUT"
+          echo "✅ staging outputs exported (staging-ready=true, digest attested)"
+
+      - name: Clean up staging key
+        # always() is CRITICAL (spec §1.1-7 / P1-3): the private key must be removed
+        # from the persistent self-hosted runner EVEN WHEN the push/verify steps of
+        # the staging window fail — a digest mismatch turns the job red precisely at
+        # the moment the key exists on disk; without always() it would reside there.
+        if: always() && github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          KEY: ${{ steps.staging-key.outputs.key-path }}
+        run: |
+          if [ -n "${KEY:-}" ]; then
+            rm -f "$KEY"
+          fi
+
       - name: Upload site artifact
         # v1.3.35 (quota): site-zip is a deploy-transient payload — the fleet
         # publishes to the rsync target, not to GitHub. 1-day retention floor
@@ -934,7 +1192,16 @@ jobs:
         # supported mechanism for the same 1-day floor.
         # Output artifact-id feeds the post-deploy purge (render job output
         # site-artifact-id).
+        # Staging handoff (Model B): staging-pure SKIPS the site-zip upload
+        # entirely (quota-immune channel); both dual-writes with the upload
+        # non-fatal (artifact quota exhaustion must not kill a run whose real
+        # channel is staging); artifact keeps the existing strict, always-
+        # upload behavior (continue-on-error resolves to false). id + the
+        # artifact-id output are preserved; the post-deploy purge self-skips
+        # on an empty id (its if: guards site-artifact-id != '').
         id: upload-site
+        if: inputs.site-transport != 'staging'
+        continue-on-error: ${{ inputs.site-transport == 'both' }}
         uses: actions/upload-artifact@v4
         with:
           name: site-zip
@@ -1040,8 +1307,147 @@ jobs:
       # already declares (fleet-proven at caller default), no other scope.
       actions: write
     steps:
-      - name: Download site artifact
+      - name: Ensure rsync is available
         if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          if command -v rsync >/dev/null 2>&1; then
+            echo "rsync already present: $(rsync --version | head -n1)"; exit 0
+          fi
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+          if command -v apt-get >/dev/null 2>&1; then
+            $SUDO apt-get update -y && $SUDO apt-get install -y rsync
+          elif command -v apk >/dev/null 2>&1; then
+            $SUDO apk add --no-cache rsync
+          elif command -v dnf >/dev/null 2>&1; then
+            $SUDO dnf install -y rsync
+          elif command -v yum >/dev/null 2>&1; then
+            $SUDO yum install -y rsync
+          else
+            echo "::error::rsync missing and no supported package manager (apt-get/apk/dnf/yum) found"
+            exit 1
+          fi
+          echo "Installed: $(rsync --version | head -n1)"
+
+      - name: Write SSH key
+        env:
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$TEACHING_DEPLOY_SSH_KEY" ]; then
+            echo "::error::Le secret TEACHING_DEPLOY_SSH_KEY n'est pas défini ou n'est pas visible par ce dépôt ; déploiement impossible"
+            exit 1
+          fi
+          KEY="$(mktemp /tmp/teaching-deploy-key.XXXXXX)"
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          echo "KEY=$KEY" >> "$GITHUB_ENV"
+
+      - name: Pull staged site
+        # Staging handoff (Model B) — receiver core. Consumes the render-job
+        # staging outputs ONLY through a full re-validation (exact per-segment
+        # mirror of "Guard staging path" + run-dir shape + 64-hex digest).
+        # The remote path is DERIVED from the validated staging-dir value
+        # (never the redundant staging-zip output, never a raw interpolation).
+        # Key access mirrors the rsync-live step exactly: $KEY arrives via
+        # GITHUB_ENV (written by "Write SSH key" above) and is used UNQUOTED
+        # inside the rsync -e string (rsync splits -e on whitespace; escaped
+        # inner quotes would reach ssh literally) — same proven form as
+        # "rsync to personal server". Local name site-zip/site-zip.zip keeps
+        # "Unpack site" byte-unchanged across all transport modes.
+        # Typed outcome via steps.pull-staging.outputs.pull-failure:
+        #   none       => exit 0 (payload digest-attested)
+        #   validation => exit 1 ALWAYS (staging AND both — poison-class)
+        #   integrity  => exit 1 ALWAYS (staging AND both — digest mismatch)
+        #   transport  => exit 1 in staging (no fallback by design);
+        #                 exit 0 in both (soft — artifact Download fallback runs)
+        id: pull-staging
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          SITE_TRANSPORT: ${{ inputs.site-transport }}
+          STAGING_DIR: ${{ needs.render.outputs.staging-dir }}
+          STAGING_SHA256: ${{ needs.render.outputs.staging-sha256 }}
+        run: |
+          set -uo pipefail
+          fail() { # $1=pull-failure class, $2=exit code (::error:: already echoed)
+            echo "pull-failure=$1" >> "$GITHUB_OUTPUT"
+            exit "$2"
+          }
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          case "$SITE_TRANSPORT" in
+            staging|both) ;;
+            *)
+              echo "::error::Pull staged site invoked with site-transport='$SITE_TRANSPORT' — gate/inputs desynchronized; refusing"
+              fail validation 1
+              ;;
+          esac
+          require_staging_dir "$STAGING_DIR" || fail validation 1
+          REST="${STAGING_DIR#teaching-staging/}"
+          RUN_DIR="${REST#*/}"
+          if [[ ! "$RUN_DIR" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "::error::staging run-dir '$RUN_DIR' is not <run-id>-<attempt> (^[0-9]+-[0-9]+\$) — refusing"
+            fail validation 1
+          fi
+          if [[ ! "$STAGING_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::staging-sha256 missing or malformed (expected ^[0-9a-f]{64}\$): '$STAGING_SHA256'"
+            fail validation 1
+          fi
+          LOCAL_ZIP="$GITHUB_WORKSPACE/site-zip/site-zip.zip"
+          mkdir -p "$(dirname "$LOCAL_ZIP")"
+          # Transport: rsync primary, scp fallback on TOOL ABSENCE only (Turn C
+          # semantics — a present-but-failing transfer is a transport failure,
+          # never retried through another tool). Validated path, double quotes,
+          # local expansion.
+          RC=1
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -az -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "bruno@vai.univ-tln.fr:${STAGING_DIR}/site.zip" "$LOCAL_ZIP" && RC=0
+          else
+            echo "::notice::rsync absent from the deploy runner — scp fallback (same validated remote path)"
+            scp -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr:${STAGING_DIR}/site.zip" "$LOCAL_ZIP" && RC=0
+          fi
+          if [ "$RC" -ne 0 ] || [ ! -s "$LOCAL_ZIP" ]; then
+            rm -f "$LOCAL_ZIP"
+            echo "::error::Staging transport failed (rsync/scp non-zero or empty payload) — remote=${STAGING_DIR}/site.zip"
+            if [ "$SITE_TRANSPORT" = "both" ]; then
+              echo "pull-failure=transport" >> "$GITHUB_OUTPUT"
+              echo "::warning::both mode — soft exit: the artifact Download fallback will serve (transport class only; integrity/validation never fall back)"
+              exit 0
+            fi
+            fail transport 1
+          fi
+          # Integrity: local digest vs the render-verified 64-hex digest.
+          LOCAL_SHA="$(sha256sum "$LOCAL_ZIP" | awk '{print $1}')"
+          if [[ ! "$LOCAL_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Local sha256 unreadable after pull ('$LOCAL_SHA') — classified integrity"
+            rm -f "$LOCAL_ZIP"
+            fail integrity 1
+          fi
+          if [ "$LOCAL_SHA" != "$STAGING_SHA256" ]; then
+            echo "::error::digest mismatch — suspicion d'empoisonnement staging ; aucun fallback artifact par conception (local=$LOCAL_SHA expected=$STAGING_SHA256 dir=$STAGING_DIR)"
+            rm -f "$LOCAL_ZIP"
+            fail integrity 1
+          fi
+          echo "pull-failure=none" >> "$GITHUB_OUTPUT"
+          echo "✅ staged site pulled and digest-attested: ${STAGING_DIR}/site.zip -> $LOCAL_ZIP"
+
+      - name: Download site artifact
+        if: github.event_name == 'push' && (inputs.site-transport == 'artifact' || (inputs.site-transport == 'both' && steps.pull-staging.outputs.pull-failure == 'transport'))
         uses: actions/download-artifact@v4
         with:
           name: site-zip
@@ -1149,42 +1555,6 @@ jobs:
           echo "SUBPATH=$SUBPATH" >> "$GITHUB_ENV"
           echo "Cible de déploiement : bruno@vai.univ-tln.fr:teaching-material/$REPO/$SUBPATH/"
 
-      - name: Write SSH key
-        env:
-          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
-        run: |
-          if [ -z "$TEACHING_DEPLOY_SSH_KEY" ]; then
-            echo "::error::Le secret TEACHING_DEPLOY_SSH_KEY n'est pas défini ou n'est pas visible par ce dépôt ; déploiement impossible"
-            exit 1
-          fi
-          KEY="$(mktemp /tmp/teaching-deploy-key.XXXXXX)"
-          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
-          chmod 600 "$KEY"
-          echo "KEY=$KEY" >> "$GITHUB_ENV"
-
-      - name: Ensure rsync is available
-        if: github.event_name == 'push'
-        run: |
-          set -euo pipefail
-          if command -v rsync >/dev/null 2>&1; then
-            echo "rsync already present: $(rsync --version | head -n1)"; exit 0
-          fi
-          SUDO=""
-          if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
-          if command -v apt-get >/dev/null 2>&1; then
-            $SUDO apt-get update -y && $SUDO apt-get install -y rsync
-          elif command -v apk >/dev/null 2>&1; then
-            $SUDO apk add --no-cache rsync
-          elif command -v dnf >/dev/null 2>&1; then
-            $SUDO dnf install -y rsync
-          elif command -v yum >/dev/null 2>&1; then
-            $SUDO yum install -y rsync
-          else
-            echo "::error::rsync missing and no supported package manager (apt-get/apk/dnf/yum) found"
-            exit 1
-          fi
-          echo "Installed: $(rsync --version | head -n1)"
-
       - name: rsync to personal server (scoped --delete)
         id: rsync-deploy
         if: github.event_name == 'push' && env.DEPLOY_SKIP != 'true'
@@ -1289,6 +1659,162 @@ jobs:
           </html>
           STABLE_POINTER_EOF
           echo "✅ Pointeur stable écrit : bruno@vai.univ-tln.fr:$STABLE_DIR/index.html -> releases/$TAG/"
+
+      - name: Cleanup staging
+        # Staging handoff (Model B) — post-success housekeeping on vai (spec §4).
+        # Runs ONLY on success() (never always(): we purge solely on a proven
+        # green deploy). staging-dir is re-validated with the SAME per-segment
+        # guard as Pull staged site; the remote script receives ONLY the
+        # validated values (double-quoted, local expansion) as bash -s
+        # positional args — never interpolated into the script text.
+        # Depth-corrected sweep: eviction targets are DIRECT children (run-dirs)
+        # of teaching-staging/<REPO> => -mindepth 1 -maxdepth 1 from that base
+        # (the spec B4 fragment's -mindepth 2 had an ambiguous root — not
+        # copied). Age floor -mmin +60 (15-min deploy timeout x4): a sibling or
+        # re-run dir younger than 60 min is NEVER a candidate. Among candidates
+        # (mtime desc) the 3 most recent survive (keep-N), the rest are evicted.
+        # Hard age-out at 14 days. Positive eviction assertions afterwards.
+        # Housekeeping only: any purge problem => ::warning:: + exit 0 (content
+        # is already live); the job is never failed by this step.
+        if: success() && github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          SITE_TRANSPORT: ${{ inputs.site-transport }}
+          STAGING_DIR: ${{ needs.render.outputs.staging-dir }}
+        run: |
+          set -uo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          if [ -z "${KEY:-}" ]; then
+            echo "::warning::KEY not present (SSH setup skipped) — staging cleanup not run"
+            exit 0
+          fi
+          case "$SITE_TRANSPORT" in
+            staging|both) ;;
+            *) echo "::warning::Cleanup staging invoked with site-transport='$SITE_TRANSPORT' — skipping (no blind rm)"; exit 0 ;;
+          esac
+          if ! require_staging_dir "$STAGING_DIR"; then
+            echo "::warning::staging-dir failed receiver validation — cleanup skipped (no blind rm)"
+            exit 0
+          fi
+          REST="${STAGING_DIR#teaching-staging/}"
+          REPO="${REST%%/*}"
+          RUN_DIR="${REST#*/}"
+          if [[ ! "$RUN_DIR" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "::warning::run-dir '$RUN_DIR' is not <run-id>-<attempt> — cleanup skipped (no blind rm)"
+            exit 0
+          fi
+          RC=0
+          OUT="$(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" bash -s -- "teaching-staging/$REPO" "$RUN_DIR" <<'REMOTE'
+          set -u
+          BASE="$1"; CUR_RUN="$2"; FAILED=0
+          note() { echo "ASSERT-FAIL $*"; FAILED=1; }
+          # Defense-in-depth re-check (authoritative validation is the workflow guard above).
+          case "$BASE" in
+            teaching-staging/[A-Za-z0-9_][A-Za-z0-9._-]*) ;;
+            *) note "base-rejected '$BASE'"; exit 2 ;;
+          esac
+          case "$CUR_RUN" in
+            ''|*[!0-9-]*) note "run-dir-rejected '$CUR_RUN'"; exit 2 ;;
+          esac
+          BASE="${BASE%/}"
+          CUR="$BASE/$CUR_RUN"
+          BEFORE_PROT="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mmin -60 2>/dev/null || true)"
+          # (a) remove the run-dir consumed by THIS run (validated values only)
+          if [ -d "$CUR" ]; then
+            rm -rf "$CUR" || note "rm-current-failed $CUR"
+          fi
+          if [ -e "$CUR" ]; then note "rm-current-survived $CUR"; fi
+          # (b) keep-N=3 sweep among DIRECT children older than the 60-min floor
+          CANDS="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mmin +60 2>/dev/null || true)"
+          CAND_COUNT="$(printf '%s\n' "$CANDS" | grep -c .)"
+          idx=0
+          while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            [ -d "$d" ] || continue
+            printf '%s\n' "$CANDS" | grep -Fxq "$d" || continue
+            idx=$((idx+1))
+            if [ "$idx" -le 3 ]; then
+              echo "KEEP $d"
+            elif rm -rf "$d"; then
+              echo "EVICT $d"
+            else
+              note "evict-failed $d"
+            fi
+          done <<LIST
+          $(ls -1dt "$BASE"/* 2>/dev/null || true)
+          LIST
+          AFTER_COUNT="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mmin +60 2>/dev/null | grep -c .)"
+          EXPECTED=$(( CAND_COUNT < 3 ? CAND_COUNT : 3 ))
+          [ "$AFTER_COUNT" -eq "$EXPECTED" ] || note "survivors-after-sweep $AFTER_COUNT expected $EXPECTED"
+          # (d-bis) nothing younger than the floor was removed (except the consumed current dir)
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            [ "$p" = "$CUR" ] && continue
+            [ -e "$p" ] || note "protected-deleted $p"
+          done <<LIST2
+          $BEFORE_PROT
+          LIST2
+          # (c) hard age-out at 14 days
+          find "$BASE" -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} + 2>/dev/null || note "aged-out-rm"
+          REMAIN_14D="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mtime +14 2>/dev/null | grep -c .)"
+          [ "$REMAIN_14D" -eq 0 ] || note "aged-out-survivors $REMAIN_14D"
+          exit "$FAILED"
+          REMOTE
+          )" || RC=$?
+          printf '%s\n' "$OUT"
+          if [ "$RC" -ne 0 ] || printf '%s\n' "$OUT" | grep -q '^ASSERT-FAIL'; then
+            echo "::warning::staging housekeeping incomplete (rc=$RC) — deployment already live; nothing retried blind. Check vai permissions/quota."
+          fi
+          echo "✅ staging cleanup pass: consumed $STAGING_DIR removed, keep-N=3 (floor 60 min), age-out 14 d"
+          exit 0
+
+      - name: Log vai home disk usage (df -h ~, read-only)
+        # H3 sizing probe (spec §4): READ-ONLY df on the vai home, logged every
+        # staging/both push — including after a failed step (always()), while
+        # KEY is still present (this step sits BEFORE Clean up SSH key).
+        # Purely informational: a low-disk reading is a ::warning:: for keep-N
+        # sizing, NEVER red.
+        if: always() && github.event_name == 'push' && inputs.site-transport != 'artifact'
+        run: |
+          set -uo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "::notice::KEY not present — df probe skipped"
+            exit 0
+          fi
+          RC=0
+          OUT="$(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "df -h ~" 2>&1)" || RC=$?
+          printf '%s\n' "$OUT"
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::df -h probe failed (rc=$RC) — informational only"
+            exit 0
+          fi
+          AVAIL="$(printf '%s\n' "$OUT" | tail -n 1 | awk '{print $4}')"
+          LOW="$(awk -v a="$AVAIL" 'BEGIN{
+            u = substr(a, length(a), 1); n = substr(a, 1, length(a)-1) + 0;
+            m = (u=="K")?1024:(u=="M")?1048576:(u=="G")?1073741824:(u=="T")?1099511627776:1;
+            b = (u ~ /[KMGT]/) ? n*m : n;
+            print (b < 10737418240) ? "yes" : "no" }')"
+          if [ "$LOW" = "yes" ]; then
+            echo "::warning::vai home disk low: avail=$AVAIL (< 10 GiB) — revisit keep-N sizing / staging growth (H3)"
+          else
+            echo "vai home avail: $AVAIL (>= 10 GiB)"
+          fi
+          exit 0
 
       - name: Clean up SSH key
         if: always()
