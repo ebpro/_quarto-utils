@@ -1447,7 +1447,7 @@ jobs:
           echo "✅ staged site pulled and digest-attested: ${STAGING_DIR}/site.zip -> $LOCAL_ZIP"
 
       - name: Download site artifact
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && (inputs.site-transport == 'artifact' || (inputs.site-transport == 'both' && steps.pull-staging.outputs.pull-failure == 'transport'))
         uses: actions/download-artifact@v4
         with:
           name: site-zip
