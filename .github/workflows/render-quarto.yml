@@ -63,6 +63,11 @@ on:
         required: false
         type: boolean
         default: false
+      site-transport:
+        description: 'Handoff render to deploy: artifact | staging | both. staging = vai ~/teaching-staging (quota-immune); both = dual-write transition; default artifact = inert (existing behavior unchanged).'
+        required: false
+        type: string
+        default: 'artifact'
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
