@@ -104,7 +104,7 @@ jobs:
       staging-ready: ${{ steps.staging-export.outputs.staging-ready }}
     steps:
       - name: Checkout repository (caller) with submodules
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           token: ${{ secrets.EBPRO_CI_PAT || secrets.GITHUB_TOKEN }}
@@ -113,7 +113,7 @@ jobs:
         run: rm -rf _quarto-utils
 
       - name: Checkout utilities repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.utils-repo }}
           ref: ${{ inputs.utils-ref }}
