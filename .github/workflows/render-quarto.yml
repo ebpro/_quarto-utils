@@ -1782,6 +1782,39 @@ jobs:
           echo "✅ staging cleanup pass: consumed $STAGING_DIR removed, keep-N=3 (floor 60 min), age-out 14 d"
           exit 0
 
+      - name: Log vai home disk usage (df -h ~, read-only)
+        # H3 sizing probe (spec §4): READ-ONLY df on the vai home, logged every
+        # staging/both push — including after a failed step (always()), while
+        # KEY is still present (this step sits BEFORE Clean up SSH key).
+        # Purely informational: a low-disk reading is a ::warning:: for keep-N
+        # sizing, NEVER red.
+        if: always() && github.event_name == 'push' && inputs.site-transport != 'artifact'
+        run: |
+          set -uo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "::notice::KEY not present — df probe skipped"
+            exit 0
+          fi
+          RC=0
+          OUT="$(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "df -h ~" 2>&1)" || RC=$?
+          printf '%s\n' "$OUT"
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::df -h probe failed (rc=$RC) — informational only"
+            exit 0
+          fi
+          AVAIL="$(printf '%s\n' "$OUT" | tail -n 1 | awk '{print $4}')"
+          LOW="$(awk -v a="$AVAIL" 'BEGIN{
+            u = substr(a, length(a), 1); n = substr(a, 1, length(a)-1) + 0;
+            m = (u=="K")?1024:(u=="M")?1048576:(u=="G")?1073741824:(u=="T")?1099511627776:1;
+            b = (u ~ /[KMGT]/) ? n*m : n;
+            print (b < 10737418240) ? "yes" : "no" }')"
+          if [ "$LOW" = "yes" ]; then
+            echo "::warning::vai home disk low: avail=$AVAIL (< 10 GiB) — revisit keep-N sizing / staging growth (H3)"
+          else
+            echo "vai home avail: $AVAIL (>= 10 GiB)"
+          fi
+          exit 0
+
       - name: Clean up SSH key
         if: always()
         run: |
