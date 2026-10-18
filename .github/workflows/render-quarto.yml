@@ -1343,6 +1343,109 @@ jobs:
           chmod 600 "$KEY"
           echo "KEY=$KEY" >> "$GITHUB_ENV"
 
+      - name: Pull staged site
+        # Staging handoff (Model B) — receiver core. Consumes the render-job
+        # staging outputs ONLY through a full re-validation (exact per-segment
+        # mirror of "Guard staging path" + run-dir shape + 64-hex digest).
+        # The remote path is DERIVED from the validated staging-dir value
+        # (never the redundant staging-zip output, never a raw interpolation).
+        # Key access mirrors the rsync-live step exactly: $KEY arrives via
+        # GITHUB_ENV (written by "Write SSH key" above) and is used UNQUOTED
+        # inside the rsync -e string (rsync splits -e on whitespace; escaped
+        # inner quotes would reach ssh literally) — same proven form as
+        # "rsync to personal server". Local name site-zip/site-zip.zip keeps
+        # "Unpack site" byte-unchanged across all transport modes.
+        # Typed outcome via steps.pull-staging.outputs.pull-failure:
+        #   none       => exit 0 (payload digest-attested)
+        #   validation => exit 1 ALWAYS (staging AND both — poison-class)
+        #   integrity  => exit 1 ALWAYS (staging AND both — digest mismatch)
+        #   transport  => exit 1 in staging (no fallback by design);
+        #                 exit 0 in both (soft — artifact Download fallback runs)
+        id: pull-staging
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          SITE_TRANSPORT: ${{ inputs.site-transport }}
+          STAGING_DIR: ${{ needs.render.outputs.staging-dir }}
+          STAGING_SHA256: ${{ needs.render.outputs.staging-sha256 }}
+        run: |
+          set -uo pipefail
+          fail() { # $1=pull-failure class, $2=exit code (::error:: already echoed)
+            echo "pull-failure=$1" >> "$GITHUB_OUTPUT"
+            exit "$2"
+          }
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          case "$SITE_TRANSPORT" in
+            staging|both) ;;
+            *)
+              echo "::error::Pull staged site invoked with site-transport='$SITE_TRANSPORT' — gate/inputs desynchronized; refusing"
+              fail validation 1
+              ;;
+          esac
+          require_staging_dir "$STAGING_DIR" || fail validation 1
+          REST="${STAGING_DIR#teaching-staging/}"
+          RUN_DIR="${REST#*/}"
+          if [[ ! "$RUN_DIR" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "::error::staging run-dir '$RUN_DIR' is not <run-id>-<attempt> (^[0-9]+-[0-9]+\$) — refusing"
+            fail validation 1
+          fi
+          if [[ ! "$STAGING_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::staging-sha256 missing or malformed (expected ^[0-9a-f]{64}\$): '$STAGING_SHA256'"
+            fail validation 1
+          fi
+          LOCAL_ZIP="$GITHUB_WORKSPACE/site-zip/site-zip.zip"
+          mkdir -p "$(dirname "$LOCAL_ZIP")"
+          # Transport: rsync primary, scp fallback on TOOL ABSENCE only (Turn C
+          # semantics — a present-but-failing transfer is a transport failure,
+          # never retried through another tool). Validated path, double quotes,
+          # local expansion.
+          RC=1
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -az -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "bruno@vai.univ-tln.fr:${STAGING_DIR}/site.zip" "$LOCAL_ZIP" && RC=0
+          else
+            echo "::notice::rsync absent from the deploy runner — scp fallback (same validated remote path)"
+            scp -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr:${STAGING_DIR}/site.zip" "$LOCAL_ZIP" && RC=0
+          fi
+          if [ "$RC" -ne 0 ] || [ ! -s "$LOCAL_ZIP" ]; then
+            rm -f "$LOCAL_ZIP"
+            echo "::error::Staging transport failed (rsync/scp non-zero or empty payload) — remote=${STAGING_DIR}/site.zip"
+            if [ "$SITE_TRANSPORT" = "both" ]; then
+              echo "pull-failure=transport" >> "$GITHUB_OUTPUT"
+              echo "::warning::both mode — soft exit: the artifact Download fallback will serve (transport class only; integrity/validation never fall back)"
+              exit 0
+            fi
+            fail transport 1
+          fi
+          # Integrity: local digest vs the render-verified 64-hex digest.
+          LOCAL_SHA="$(sha256sum "$LOCAL_ZIP" | awk '{print $1}')"
+          if [[ ! "$LOCAL_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Local sha256 unreadable after pull ('$LOCAL_SHA') — classified integrity"
+            rm -f "$LOCAL_ZIP"
+            fail integrity 1
+          fi
+          if [ "$LOCAL_SHA" != "$STAGING_SHA256" ]; then
+            echo "::error::digest mismatch — suspicion d'empoisonnement staging ; aucun fallback artifact par conception (local=$LOCAL_SHA expected=$STAGING_SHA256 dir=$STAGING_DIR)"
+            rm -f "$LOCAL_ZIP"
+            fail integrity 1
+          fi
+          echo "pull-failure=none" >> "$GITHUB_OUTPUT"
+          echo "✅ staged site pulled and digest-attested: ${STAGING_DIR}/site.zip -> $LOCAL_ZIP"
+
       - name: Download site artifact
         if: github.event_name == 'push'
         uses: actions/download-artifact@v4
