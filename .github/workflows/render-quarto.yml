@@ -972,6 +972,39 @@ jobs:
           echo "staging-dir=$STAGING_DIR" >> "$GITHUB_OUTPUT"
           echo "✅ staging path validated — target (relative to deploy home): $STAGING_DIR"
 
+      - name: Staging key material
+        # Mirrors the deploy job's "Write SSH key" pattern (mktemp + printf + chmod 600,
+        # secret only via env, never echoed). Key path exported as an OUTPUT so the
+        # mid-block staging steps and the cleanup step resolve the SAME file; the key
+        # window is closed by "Clean up staging key" (if: always()) below — Turn C will
+        # insert Ensure dir / Push / Verify digest / Export outputs between them.
+        id: staging-key
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$TEACHING_DEPLOY_SSH_KEY" ]; then
+            echo "::error::Le secret TEACHING_DEPLOY_SSH_KEY n'est pas défini ou n'est pas visible par ce dépôt ; staging impossible"
+            exit 1
+          fi
+          KEY="$(mktemp /tmp/teaching-staging-key.XXXXXX)"
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          echo "key-path=$KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up staging key
+        # always() is CRITICAL (spec §1.1-7 / P1-3): the private key must be removed
+        # from the persistent self-hosted runner EVEN WHEN the push/verify steps of
+        # the staging window fail — a digest mismatch turns the job red precisely at
+        # the moment the key exists on disk; without always() it would reside there.
+        if: always() && github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          KEY: ${{ steps.staging-key.outputs.key-path }}
+        run: |
+          if [ -n "${KEY:-}" ]; then
+            rm -f "$KEY"
+          fi
+
       - name: Upload site artifact
         # v1.3.35 (quota): site-zip is a deploy-transient payload — the fleet
         # publishes to the rsync target, not to GitHub. 1-day retention floor
