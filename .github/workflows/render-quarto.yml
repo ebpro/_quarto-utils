@@ -994,6 +994,83 @@ jobs:
           chmod 600 "$KEY"
           echo "key-path=$KEY" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure staging dir
+        # Receiver-side mirror of the guard: steps.guard.outputs.staging-dir is
+        # RE-VALIDATED per segment before ANY use (never a raw output). The
+        # remote command is DOUBLE-QUOTED with LOCAL expansion of the validated
+        # path + escaped inner quotes — never single-quoted (that would leak
+        # $vars to the remote shell, spec P2-8). Prefix `teaching-staging`
+        # literal, home-relative (no /home/... here). Failure => red.
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          KEY: ${{ steps.staging-key.outputs.key-path }}
+          STAGING_DIR: ${{ steps.guard.outputs.staging-dir }}
+        run: |
+          set -euo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR"
+          ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "mkdir -p \"$STAGING_DIR\""
+          echo "✅ staging dir ready: $STAGING_DIR"
+
+      - name: Push site to staging
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          KEY: ${{ steps.staging-key.outputs.key-path }}
+          STAGING_DIR: ${{ steps.guard.outputs.staging-dir }}
+        run: |
+          set -euo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR"
+          LOCAL_ZIP="$GITHUB_WORKSPACE/site-zip.zip"
+          if [ ! -f "$LOCAL_ZIP" ]; then
+            echo "::error::Local site-zip not found: $LOCAL_ZIP — Package rendered output must produce it before the staging push"
+            exit 1
+          fi
+          # Transport: rsync primary, scp fallback — the render container is NOT
+          # guaranteed rsync (same posture as the deploy job's "Ensure rsync"
+          # step); openssh scp is present wherever the ssh key works. A FAILING
+          # transport stays red (set -e): the fallback covers tool ABSENCE only,
+          # never a failed transfer (no silent artifact-only degradation here).
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -az -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "$LOCAL_ZIP" "bruno@vai.univ-tln.fr:$STAGING_DIR/site.zip"
+          else
+            echo "::notice::rsync absent from the render container — scp fallback (same validated destination)"
+            scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$LOCAL_ZIP" "bruno@vai.univ-tln.fr:$STAGING_DIR/site.zip"
+          fi
+          echo "✅ site.zip pushed to staging: $STAGING_DIR/site.zip"
+
       - name: Clean up staging key
         # always() is CRITICAL (spec §1.1-7 / P1-3): the private key must be removed
         # from the persistent self-hosted runner EVEN WHEN the push/verify steps of
