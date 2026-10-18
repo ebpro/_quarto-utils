@@ -378,11 +378,17 @@ jobs:
             DOCKER_ARGS+=(-e DOCKER_HOST=unix:///var/run/docker.sock)
           fi
           # Keep the existing render-container removal, plus a best-effort sweep of
-          # any lecture containers this run left behind (label=ebpro-render=true).
+          # any lecture containers THIS run left behind.
+          # v1.3.36: the sweep arm is scoped by the run-scoped label
+          # ebpro-render-run=<run_id>-<attempt> (self-only). The v1.3.32 coarse
+          # label + the v1.3.31+ unscoped sweep meant every run's EXIT trap deleted
+          # ALL ebpro-render=true containers on the shared dooD daemon — including
+          # live containers of concurrent runs (canary incident: notebook-containers-intro,
+          # 3x exit-137; hazard real, actor unproven).
           # Both removals are non-fatal (|| true) so cleanup never masks the render result.
           # v1.3.31-candidate (hang watchdog): appended kill arm (kill first so the
           # sidecar can no longer act during teardown); original cleanup arms unchanged.
-          trap 'kill "${WATCHDOG_PID:-}" 2>/dev/null || true; docker rm -f "$RENDER_CONTAINER" >/dev/null 2>&1 || true; docker ps -aq --filter "label=ebpro-render=true" | xargs -r docker rm -f || true' EXIT
+          trap 'kill "${WATCHDOG_PID:-}" 2>/dev/null || true; docker rm -f "$RENDER_CONTAINER" >/dev/null 2>&1 || true; docker ps -aq --filter "label=ebpro-render-run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | xargs -r docker rm -f || true' EXIT
           if [[ "$QUARTO_IMAGE" == ghcr.io/* ]] && [ -n "$EBPRO_CI_PAT" ]; then
             echo "$EBPRO_CI_PAT" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           fi
@@ -573,8 +579,15 @@ jobs:
             # BOTH label consumers below (watchdog forensics 'docker ps -a --filter
             # label=ebpro-render=true' and the EXIT-trap sweep arm). Without it both
             # were dead no-ops (hang-report.txt 2026-10-17: header + zero rows).
+            # v1.3.36: added the run-scoped ebpro-render-run label (GITHUB_RUN_ID and
+            # GITHUB_RUN_ATTEMPT are runner default env vars, set for every run step;
+            # the coarse label is kept for the watchdog forensics reads and human
+            # fleet-wide sweeps, while the EXIT-trap sweep arm now matches the
+            # run-scoped label only — fixing the cross-run SIGKILL hazard on the
+            # shared dooD daemon).
             docker run --rm $DOCKER_MOUNTS --name "$RENDER_CONTAINER" \
-              --label ebpro-render=true \
+              --label "ebpro-render=true" \
+              --label "ebpro-render-run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
               -v "$GITHUB_WORKSPACE":/workdir \
               -w /workdir \
               "${DOCKER_ARGS[@]}" \
