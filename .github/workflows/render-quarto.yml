@@ -1,3 +1,4 @@
+# v1.3.35: site-zip artifact lifecycle — 1-day retention floor at upload + purge after a successful deploy-static rsync (Team-plan 2 GiB artifact quota).
 # v1.3.31-candidate: hang watchdog for the render step (input hang-detection-minutes, default 0 = off).
 name: Render Quarto Documents (reusable)
 
@@ -82,6 +83,12 @@ jobs:
     permissions:
       contents: read
       actions: write
+    outputs:
+      # v1.3.35: id of the uploaded site-zip artifact; consumed by the
+      # "Purge website artifact (post-deploy)" step of deploy-static.
+      # Empty if the upload step did not run or failed (purge self-skips then
+      # and the 1-day retention floor reclaims the space).
+      site-artifact-id: ${{ steps.upload-site.outputs.artifact-id }}
     steps:
       - name: Checkout repository (caller) with submodules
         uses: actions/checkout@v4
@@ -904,11 +911,22 @@ jobs:
           "
 
       - name: Upload site artifact
+        # v1.3.35 (quota): site-zip is a deploy-transient payload — the fleet
+        # publishes to the rsync target, not to GitHub. 1-day retention floor
+        # (was 7): if the post-deploy purge in deploy-static is skipped (PR run,
+        # deploy failure/skip) or its API call fails, the floor still reclaims
+        # the Team-plan 2 GiB artifact pool within a day. NOTE: the `expires`
+        # input does NOT exist in actions/upload-artifact v4-v7 (verified
+        # against upstream action.yml 2026-10-18) — retention-days is the
+        # supported mechanism for the same 1-day floor.
+        # Output artifact-id feeds the post-deploy purge (render job output
+        # site-artifact-id).
+        id: upload-site
         uses: actions/upload-artifact@v4
         with:
           name: site-zip
           path: site-zip.zip
-          retention-days: 7
+          retention-days: 1
 
       - name: Upload quarto execution log
         # Design rule 6: the quarto --log file is uploaded whenever the run
@@ -1003,6 +1021,11 @@ jobs:
     if: inputs.deploy-static && (github.event_name == 'push' || github.event_name == 'delete')
     timeout-minutes: 15
     runs-on: [self-hosted, linux, ebpro-org, x64]
+    permissions:
+      # v1.3.35: actions: write is required by the post-deploy artifact purge
+      # (DELETE /repos/.../actions/artifacts/{id}). Same grant the render job
+      # already declares (fleet-proven at caller default), no other scope.
+      actions: write
     steps:
       - name: Download site artifact
         if: github.event_name == 'push'
@@ -1150,6 +1173,7 @@ jobs:
           echo "Installed: $(rsync --version | head -n1)"
 
       - name: rsync to personal server (scoped --delete)
+        id: rsync-deploy
         if: github.event_name == 'push' && env.DEPLOY_SKIP != 'true'
         run: |
           # Re-vérification de sécurité juste avant le rsync destructif.
@@ -1259,6 +1283,28 @@ jobs:
           if [ -n "${KEY:-}" ]; then
             rm -f "$KEY"
           fi
+
+      - name: Purge website artifact (post-deploy)
+        # v1.3.35 (quota): site-zip has served its only purpose once the site
+        # landed on the rsync target — delete it from the Team-plan 2 GiB
+        # artifact pool immediately (fleet produced 11.3 GiB/7d at 38 consumers;
+        # quota exhaustion silently SKIPS deploy-static fleet-wide).
+        # Gate: runs iff the rsync step itself executed and succeeded — even
+        # when a later placeholder/pointer step failed (deploy is done; always()
+        # bypasses the default success() gate). PR runs never reach this job
+        # (wrapper passes deploy-static=false); delete events and DEPLOY_SKIP
+        # runs skip the rsync step -> gate false -> 1-day retention floor set
+        # at upload reclaims the space.
+        # Non-fatal by design: missing gh / 403 / 404 race prints a warning and
+        # the retention floor still applies. Reports (quarto-exec-log,
+        # visual-check-report) are NOT website artifacts — untouched by design.
+        if: always() && steps.rsync-deploy.outcome == 'success' && needs.render.outputs.site-artifact-id != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X DELETE "/repos/${{ github.repository }}/actions/artifacts/${{ needs.render.outputs.site-artifact-id }}" \
+            && echo "✅ site-zip artifact ${{ needs.render.outputs.site-artifact-id }} purged after successful deploy" \
+            || echo '::warning::purge failed (non-fatal) — the 1-day retention floor will reclaim the artifact'
 
   trigger-catalog:
     needs: [render]
