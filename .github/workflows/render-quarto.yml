@@ -967,9 +967,11 @@ jobs:
           RUN_DIR="$RUN_ID-$ATTEMPT"
           validate_segment RUN_DIR "$RUN_DIR"
           STAGING_DIR="teaching-staging/$REPO/$RUN_DIR"
-          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
-          echo "run-dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
-          echo "staging-dir=$STAGING_DIR" >> "$GITHUB_OUTPUT"
+          {
+            echo "repo=$REPO"
+            echo "run-dir=$RUN_DIR"
+            echo "staging-dir=$STAGING_DIR"
+          } >> "$GITHUB_OUTPUT"
           echo "✅ staging path validated — target (relative to deploy home): $STAGING_DIR"
 
       - name: Staging key material
