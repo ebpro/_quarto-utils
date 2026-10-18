@@ -1660,6 +1660,128 @@ jobs:
           STABLE_POINTER_EOF
           echo "✅ Pointeur stable écrit : bruno@vai.univ-tln.fr:$STABLE_DIR/index.html -> releases/$TAG/"
 
+      - name: Cleanup staging
+        # Staging handoff (Model B) — post-success housekeeping on vai (spec §4).
+        # Runs ONLY on success() (never always(): we purge solely on a proven
+        # green deploy). staging-dir is re-validated with the SAME per-segment
+        # guard as Pull staged site; the remote script receives ONLY the
+        # validated values (double-quoted, local expansion) as bash -s
+        # positional args — never interpolated into the script text.
+        # Depth-corrected sweep: eviction targets are DIRECT children (run-dirs)
+        # of teaching-staging/<REPO> => -mindepth 1 -maxdepth 1 from that base
+        # (the spec B4 fragment's -mindepth 2 had an ambiguous root — not
+        # copied). Age floor -mmin +60 (15-min deploy timeout x4): a sibling or
+        # re-run dir younger than 60 min is NEVER a candidate. Among candidates
+        # (mtime desc) the 3 most recent survive (keep-N), the rest are evicted.
+        # Hard age-out at 14 days. Positive eviction assertions afterwards.
+        # Housekeeping only: any purge problem => ::warning:: + exit 0 (content
+        # is already live); the job is never failed by this step.
+        if: success() && github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          SITE_TRANSPORT: ${{ inputs.site-transport }}
+          STAGING_DIR: ${{ needs.render.outputs.staging-dir }}
+        run: |
+          set -uo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          if [ -z "${KEY:-}" ]; then
+            echo "::warning::KEY not present (SSH setup skipped) — staging cleanup not run"
+            exit 0
+          fi
+          case "$SITE_TRANSPORT" in
+            staging|both) ;;
+            *) echo "::warning::Cleanup staging invoked with site-transport='$SITE_TRANSPORT' — skipping (no blind rm)"; exit 0 ;;
+          esac
+          if ! require_staging_dir "$STAGING_DIR"; then
+            echo "::warning::staging-dir failed receiver validation — cleanup skipped (no blind rm)"
+            exit 0
+          fi
+          REST="${STAGING_DIR#teaching-staging/}"
+          RUN_DIR="${REST#*/}"
+          if [[ ! "$RUN_DIR" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "::warning::run-dir '$RUN_DIR' is not <run-id>-<attempt> — cleanup skipped (no blind rm)"
+            exit 0
+          fi
+          RC=0
+          OUT="$(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" bash -s -- "teaching-staging/$REPO" "$RUN_DIR" <<'REMOTE'
+          set -u
+          BASE="$1"; CUR_RUN="$2"; FAILED=0
+          note() { echo "ASSERT-FAIL $*"; FAILED=1; }
+          # Defense-in-depth re-check (authoritative validation is the workflow guard above).
+          case "$BASE" in
+            teaching-staging/[A-Za-z0-9_][A-Za-z0-9._-]*) ;;
+            *) note "base-rejected '$BASE'"; exit 2 ;;
+          esac
+          case "$CUR_RUN" in
+            ''|*[!0-9-]*) note "run-dir-rejected '$CUR_RUN'"; exit 2 ;;
+          esac
+          BASE="${BASE%/}"
+          CUR="$BASE/$CUR_RUN"
+          BEFORE_PROT="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mmin -60 2>/dev/null || true)"
+          # (a) remove the run-dir consumed by THIS run (validated values only)
+          if [ -d "$CUR" ]; then
+            rm -rf "$CUR" || note "rm-current-failed $CUR"
+          fi
+          if [ -e "$CUR" ]; then note "rm-current-survived $CUR"; fi
+          # (b) keep-N=3 sweep among DIRECT children older than the 60-min floor
+          CANDS="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mmin +60 2>/dev/null || true)"
+          CAND_COUNT="$(printf '%s\n' "$CANDS" | grep -c .)"
+          idx=0
+          while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            [ -d "$d" ] || continue
+            printf '%s\n' "$CANDS" | grep -Fxq "$d" || continue
+            idx=$((idx+1))
+            if [ "$idx" -le 3 ]; then
+              echo "KEEP $d"
+            elif rm -rf "$d"; then
+              echo "EVICT $d"
+            else
+              note "evict-failed $d"
+            fi
+          done <<LIST
+          $(ls -1dt "$BASE"/* 2>/dev/null || true)
+          LIST
+          AFTER_COUNT="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mmin +60 2>/dev/null | grep -c .)"
+          EXPECTED=$(( CAND_COUNT < 3 ? CAND_COUNT : 3 ))
+          [ "$AFTER_COUNT" -eq "$EXPECTED" ] || note "survivors-after-sweep $AFTER_COUNT expected $EXPECTED"
+          # (d-bis) nothing younger than the floor was removed (except the consumed current dir)
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            [ "$p" = "$CUR" ] && continue
+            [ -e "$p" ] || note "protected-deleted $p"
+          done <<LIST2
+          $BEFORE_PROT
+          LIST2
+          # (c) hard age-out at 14 days
+          find "$BASE" -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} + 2>/dev/null || note "aged-out-rm"
+          REMAIN_14D="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mtime +14 2>/dev/null | grep -c .)"
+          [ "$REMAIN_14D" -eq 0 ] || note "aged-out-survivors $REMAIN_14D"
+          exit "$FAILED"
+          REMOTE
+          )" || RC=$?
+          printf '%s\n' "$OUT"
+          if [ "$RC" -ne 0 ] || printf '%s\n' "$OUT" | grep -q '^ASSERT-FAIL'; then
+            echo "::warning::staging housekeeping incomplete (rc=$RC) — deployment already live; nothing retried blind. Check vai permissions/quota."
+          fi
+          echo "✅ staging cleanup pass: consumed $STAGING_DIR removed, keep-N=3 (floor 60 min), age-out 14 d"
+          exit 0
+
       - name: Clean up SSH key
         if: always()
         run: |
