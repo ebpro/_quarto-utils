@@ -928,6 +928,50 @@ jobs:
           print(f'Created zip: {os.path.getsize(\"${{ github.workspace }}/site-zip.zip\")} bytes')
           "
 
+      - name: Guard staging path
+        # Staging handoff (Model B) — emitter-side path guard. Validates EVERY
+        # path segment BEFORE any step interpolates it into a remote path.
+        # Downstream staging steps MUST consume steps.guard.outputs.* (the
+        # validated values) — never a raw input/env. Prefix `teaching-staging`
+        # is LITERAL; the dir stays relative to the deploy user's home
+        # (no /home/... hardcoded here).
+        id: guard
+        if: github.event_name == 'push' && inputs.site-transport != 'artifact'
+        env:
+          SITE_TRANSPORT: ${{ inputs.site-transport }}
+        run: |
+          set -euo pipefail
+          case "$SITE_TRANSPORT" in
+            artifact|staging|both) ;;
+            *)
+              echo "::error::Invalid site-transport '$SITE_TRANSPORT' — expected one of: artifact | staging | both (no fallback)"
+              exit 1
+              ;;
+          esac
+          validate_segment() {
+            local name="$1" seg="$2"
+            if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+               && [[ "$seg" != "." && "$seg" != ".." ]] \
+               && [[ "$seg" != .* && "$seg" != -* ]]; then
+              return 0
+            fi
+            echo "::error::Invalid staging path segment $name='$seg' — must match ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$ (cap 100, no leading . or -), must not be '.' or '..'"
+            return 1
+          }
+          REPO="$(basename "$GITHUB_REPOSITORY")"
+          RUN_ID="$GITHUB_RUN_ID"
+          ATTEMPT="$GITHUB_RUN_ATTEMPT"
+          validate_segment REPO "$REPO"
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::GITHUB_RUN_ID is not numeric: '$RUN_ID'"; exit 1; }
+          [[ "$ATTEMPT" =~ ^[0-9]+$ ]] || { echo "::error::GITHUB_RUN_ATTEMPT is not numeric: '$ATTEMPT'"; exit 1; }
+          RUN_DIR="$RUN_ID-$ATTEMPT"
+          validate_segment RUN_DIR "$RUN_DIR"
+          STAGING_DIR="teaching-staging/$REPO/$RUN_DIR"
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          echo "run-dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
+          echo "staging-dir=$STAGING_DIR" >> "$GITHUB_OUTPUT"
+          echo "✅ staging path validated — target (relative to deploy home): $STAGING_DIR"
+
       - name: Upload site artifact
         # v1.3.35 (quota): site-zip is a deploy-transient payload — the fleet
         # publishes to the rsync target, not to GitHub. 1-day retention floor
