@@ -1712,6 +1712,7 @@ jobs:
             exit 0
           fi
           REST="${STAGING_DIR#teaching-staging/}"
+          REPO="${REST%%/*}"
           RUN_DIR="${REST#*/}"
           if [[ ! "$RUN_DIR" =~ ^[0-9]+-[0-9]+$ ]]; then
             echo "::warning::run-dir '$RUN_DIR' is not <run-id>-<attempt> — cleanup skipped (no blind rm)"
