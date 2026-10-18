@@ -23,7 +23,7 @@ on:
 
 jobs:
   render:
-    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@eee4d827727b4e02bace1c5a14ac99439bf3c0db
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.3.32
     secrets: inherit
     with:
       utils-ref: develop
