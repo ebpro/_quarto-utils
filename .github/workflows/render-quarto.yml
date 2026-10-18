@@ -1192,7 +1192,16 @@ jobs:
         # supported mechanism for the same 1-day floor.
         # Output artifact-id feeds the post-deploy purge (render job output
         # site-artifact-id).
+        # Staging handoff (Model B): staging-pure SKIPS the site-zip upload
+        # entirely (quota-immune channel); both dual-writes with the upload
+        # non-fatal (artifact quota exhaustion must not kill a run whose real
+        # channel is staging); artifact keeps the existing strict, always-
+        # upload behavior (continue-on-error resolves to false). id + the
+        # artifact-id output are preserved; the post-deploy purge self-skips
+        # on an empty id (its if: guards site-artifact-id != '').
         id: upload-site
+        if: inputs.site-transport != 'staging'
+        continue-on-error: ${{ inputs.site-transport == 'both' }}
         uses: actions/upload-artifact@v4
         with:
           name: site-zip
