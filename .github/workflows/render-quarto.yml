@@ -1300,7 +1300,10 @@ jobs:
         # retention sweep over this repo's run dirs follows every successful push.
         # STRICTLY BEST-EFFORT: continue-on-error + every failure branch emits
         # ::warning:: and exits 0 — this step must never fail the render job.
-        if: ${{ !cancelled() && secrets.TEACHING_DEPLOY_SSH_KEY != '' }}
+        # Secret availability is guarded IN-SCRIPT via env (empty key => notice +
+        # exit 0): the `secrets` context is not allowed in a reusable workflow's
+        # step-level `if:` (actionlint context-availability rule).
+        if: ${{ !cancelled() }}
         continue-on-error: true
         env:
           TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
