@@ -1281,6 +1281,94 @@ jobs:
             rm -f "$KEY"
           fi
 
+      - name: Publish debug bundle
+        # Server-side forensics channel (runs on success AND failure, push AND PR).
+        # Rationale: the Actions artifact pool is 2 GiB ORG-WIDE on the Team plan and
+        # the meter lags 6–12 h after purges — a quota-red upload silently kills the
+        # exec-log forensics precisely when they matter. The exec log + hang forensics
+        # therefore now ALSO ride the proven server transport (user-provisioned
+        # /home/perso/bruno/teaching-ci-debug, home-relative like teaching-staging).
+        # Auth posture copied from deploy-static "Write SSH key" + staging steps:
+        # secret only via env, mktemp + chmod 600 (step-scoped, EXIT-trap removed),
+        # literal host bruno@vai.univ-tln.fr, StrictHostKeyChecking=accept-new,
+        # rsync -az --mkpath primary / scp fallback on tool absence only.
+        # Contents: $GITHUB_WORKSPACE/quarto-exec.log (the quarto --log file the
+        # "Upload quarto execution log" step ships, produced by the render step's
+        # `quarto render --log /workdir/quarto-exec.log`) + $GITHUB_WORKSPACE/
+        # hang-forensics/ (the watchdog FORENSICS_DIR) when present.
+        # Layout: teaching-ci-debug/<repo>/<run_id>-<run_attempt>/ ; a 14-day
+        # retention sweep over this repo's run dirs follows every successful push.
+        # STRICTLY BEST-EFFORT: continue-on-error + every failure branch emits
+        # ::warning:: and exits 0 — this step must never fail the render job.
+        if: ${{ !cancelled() && secrets.TEACHING_DEPLOY_SSH_KEY != '' }}
+        continue-on-error: true
+        env:
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+          REPO: ${{ github.event.repository.name }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -uo pipefail
+          HOST="bruno@vai.univ-tln.fr"
+          LOG="$GITHUB_WORKSPACE/quarto-exec.log"
+          FOR_DIR="$GITHUB_WORKSPACE/hang-forensics"
+          # Gate: publish only when there is actually something to publish.
+          if [ ! -f "$LOG" ] && [ ! -d "$FOR_DIR" ]; then
+            echo ">> debug bundle: neither quarto-exec.log nor hang-forensics/ present — nothing to publish"
+            exit 0
+          fi
+          if [ -z "${TEACHING_DEPLOY_SSH_KEY:-}" ]; then
+            echo ">> debug bundle: TEACHING_DEPLOY_SSH_KEY not visible for this repo — skipping (artifact upload is the fallback)"
+            exit 0
+          fi
+          # Path-segment validation (mirrors "Guard staging path"); fail-CLOSED on the
+          # remote path but fail-SOFT on the job: warn + skip, never red.
+          if [[ ! "$REPO" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] || [[ "$REPO" == "." || "$REPO" == ".." ]]; then
+            echo "::warning::debug bundle: invalid repo path segment '$REPO' — skipping server publish"
+            exit 0
+          fi
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]] || [[ ! "$ATTEMPT" =~ ^[0-9]+$ ]]; then
+            echo "::warning::debug bundle: non-numeric run id/attempt ($RUN_ID-$ATTEMPT) — skipping server publish"
+            exit 0
+          fi
+          DEST="teaching-ci-debug/$REPO/$RUN_ID-$ATTEMPT"
+          KEY="$(mktemp /tmp/teaching-debug-key.XXXXXX)"
+          trap 'rm -f "$KEY"' EXIT
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          if ! ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "$HOST" "mkdir -p -- '$DEST'"; then
+            echo "::warning::debug bundle: remote mkdir failed for $DEST — skipping (render verdict unchanged)"
+            exit 0
+          fi
+          SRC=()
+          [ -f "$LOG" ] && SRC+=("$LOG")
+          [ -d "$FOR_DIR" ] && SRC+=("$FOR_DIR/")
+          RC=1
+          if command -v rsync >/dev/null 2>&1; then
+            # Same flag family as deploy-static's rsync step (-az --mkpath); no
+            # --delete: the debug tree is append-only forensics.
+            rsync -az --mkpath -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "${SRC[@]}" "$HOST:$DEST/" && RC=0
+          else
+            echo "::notice::rsync absent — scp fallback (same validated destination)"
+            OK=1
+            for s in "${SRC[@]}"; do
+              scp -r -i "$KEY" -o StrictHostKeyChecking=accept-new "$s" "$HOST:$DEST/" || OK=0
+            done
+            [ "$OK" = 1 ] && RC=0
+          fi
+          if [ "$RC" != 0 ]; then
+            echo "::warning::debug bundle: transfer to $HOST:$DEST/ failed — non-fatal (artifact uploads below untouched)"
+            exit 0
+          fi
+          echo "✅ debug bundle published: $HOST:~/$DEST/"
+          # 14-day retention sweep: this repo's run dirs only, home-relative,
+          # -mtime +14 on the immutable <run>-<attempt> dirs (mtime == publish time).
+          if ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "$HOST" "find 'teaching-ci-debug/$REPO' -maxdepth 1 -mindepth 1 -mtime +14 -exec rm -rf {} +"; then
+            echo ">> retention sweep done (bundles older than 14 days under $REPO removed)"
+          else
+            echo "::warning::debug bundle: retention sweep failed for $REPO — non-fatal (bundle itself is published)"
+          fi
+
       - name: Upload site artifact
         # v1.3.35 (quota): site-zip is a deploy-transient payload — the fleet
         # publishes to the rsync target, not to GitHub. 1-day retention floor
@@ -1293,15 +1381,19 @@ jobs:
         # Output artifact-id feeds the post-deploy purge (render job output
         # site-artifact-id).
         # Staging handoff (Model B): staging-pure SKIPS the site-zip upload
-        # entirely (quota-immune channel); both dual-writes with the upload
-        # non-fatal (artifact quota exhaustion must not kill a run whose real
-        # channel is staging); artifact keeps the existing strict, always-
-        # upload behavior (continue-on-error resolves to false). id + the
-        # artifact-id output are preserved; the post-deploy purge self-skips
-        # on an empty id (its if: guards site-artifact-id != '').
+        # entirely (quota-immune channel); both dual-writes. The upload is still
+        # ATTEMPTED first in artifact/both mode (transport stays fully
+        # functional); only its FAILURE is now non-fatal for every transport
+        # (continue-on-error: true): the pool is 2 GiB ORG-WIDE and the billing
+        # meter lags 6–12 h, so a quota-red upload is infra weather — it must
+        # never kill an otherwise-green render (silent kill switch). Forensics no
+        # longer depend on artifact availability ("Publish debug bundle" above
+        # mirrors them to the server). id + the artifact-id output are preserved;
+        # the post-deploy purge self-skips on an empty id (its if: guards
+        # site-artifact-id != '').
         id: upload-site
         if: inputs.site-transport != 'staging'
-        continue-on-error: ${{ inputs.site-transport == 'both' }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: site-zip
