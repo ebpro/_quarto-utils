@@ -420,21 +420,65 @@ $cx-output-parts: (
 .cell.cell-source::after  { @include cx-badge("java"); }
 .cell.cell-html::after    { @include cx-badge("html"); }
 .cell.cell-db::after      { @include cx-badge("SQL"); }
-// ————— revealjs : bande reservee pour la pastille —————
-// En diaporama, l'aire de la cellule est comprimee : le bloc de code demarre
-// au sommet du wrapper et la pastille absolue (top: 0.45rem, mesuree sur la
-// padding box du wrapper) survolait la premiere ligne de code — et la colonne
-// de numeros de ligne quand `code-line-numbers: true`. Le padding-top pousse
-// le contenu SOUS la pastille (dont la coordonnee ne depend pas du padding du
-// conteneur) : 0.45rem + hauteur de la pastille (~1.04rem : 0.625rem x 1.5
-// + 0.1rem de padding vertical) < 1.5rem. La regle est portee par l'ancetre
-// `.reveal`, absent des pages html simples et inexistant en typst (PDF) : les
-// rendu html/typst sont inchanges ; les regles de base ci-dessus sont
-// intactes, seule cette regle portee est ajoutee.
+// ————— revealjs : pastille en « legend » sur le bord superieur du slab —————
+// Style ratifie le 2026-10-19 (promotion de lab-quarto-lookandfeel@79458d3) :
+// le jeton ENJAMBE le bord haut du slab (centre vertical sur la ligne, facon
+// fieldset <legend>) au lieu de flotter dans la gouttiere (l'ancien
+// padding-top: 1.5rem + top: .45rem du gutter-fix d15be4a, remplace ici).
+// Geometrie mesuree sur le bundle publie (rem = 16px racine, insensible a
+// l'echelle .reveal) :
+//   H = 1.0375rem = 16.6px (0.625rem x line-height 1.5 = 15px + padding
+//       vertical 2 x .05rem = 1.6px ; le jeton n'a pas de bordure — le
+//       « contour » de l'onglet est la ligne de bord 1px du slab qu'il croise).
+//   P (padding-top de la cellule) = .75rem = 12px = H/2 (8.3) + ~3.7px
+//       d'air au-dessus : reserve totale 12px, moitie des 24px reserves.
+//   top = P - H/2 = 12 - 8.3 = 3.7px ~= .23rem -> centre a .23rem + 8.3px
+//       = 11.98px, soit la ligne de bord du slab (border-top 1px pose au
+//       debut du contenu de la cellule, a y=P). left: .75rem (12px).
+// Moitie inferieure du jeton = P + 8.3px, a l'interieur du slab : sans rien
+// faire elle toucherait l'encre de la 1re ligne (a l'interieur du slab il n'y
+// a que 1px de bord + 6px de padding `pre.sourceCode code` = 7px < 8.3px ;
+// 1re encre mesuree a P+8.5px, marge 0.2px — trop juste). La regle de
+// padding slab ci-dessous ajoute 6px : 1re boite de ligne a P+13px, encre a
+// ~P+14.5px (demi-interligne ~1.5px sur ligne de 25.7px = 19.8px x 1.3),
+// soit ~6px SOUS le bas du jeton : pas de collision.
+// Colonne de numeros (`code-line-numbers: true`) : le style pygments inline
+// `pre.numberSource` (margin-left: 3em, border-left) est dans le <head> AVANT
+// le lien du theme et perd a specificite egale contre `.reveal pre{margin:0;
+// border:none}` ; l'encre des chiffres tombe dans la gouttiere gauche du slab
+// (~0-20px, sous le jeton horizontalement) mais SUR la 1re ligne -> couverte
+// par le meme bump de 6px, aucun decalage horizontal du jeton necessaire.
+// Les regles sont portees par l'ancetre `.reveal`, absent des pages html
+// simples et inexistant en typst : rendus html/typst byte-identiques ; le
+// mixin de base (font-model html) n'est pas touche — line-height: 1
+// resserrerait H mais changerait le badge html, donc refuse.
+// Fond : le jeton chevauche la ligne de bord ; le rgba() de --cx-badge-bg
+// laisse suinter le trait — override OPAQUE en portee .reveal uniquement,
+// litteraux figes de --cx-badge-bg sans alpha choisis par le toggle adaptatif
+// $g-dark du fichier (#212529 clair / #f0f0f0 sombre) ; le badge html garde
+// son fond translucide.
 .reveal .cell.cell-console,
 .reveal .cell.cell-fs,
 .reveal .cell.cell-source,
 .reveal .cell.cell-html,
 .reveal .cell.cell-db {
-  padding-top: 1.5rem;
+  padding-top: .75rem;
+}
+@each $p in $cx-code-parts {
+  .reveal .cell.cell-console #{$p},
+  .reveal .cell.cell-fs #{$p},
+  .reveal .cell.cell-source #{$p},
+  .reveal .cell.cell-html #{$p},
+  .reveal .cell.cell-db #{$p} {
+    padding-top: 6px;
+  }
+}
+.reveal .cell.cell-console::after,
+.reveal .cell.cell-fs::after,
+.reveal .cell.cell-source::after,
+.reveal .cell.cell-html::after,
+.reveal .cell.cell-db::after {
+  top: .23rem;
+  left: .75rem;
+  background-color: if($g-dark, #f0f0f0, #212529);
 }
