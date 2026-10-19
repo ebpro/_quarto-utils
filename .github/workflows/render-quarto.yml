@@ -1484,6 +1484,111 @@ jobs:
             ${{ github.workspace }}/.quarto
           key: qfreeze-v1-${{ runner.os }}-${{ steps.freeze-key.outputs.digest }}-${{ steps.freeze-key.outputs.qver }}-${{ steps.freeze-key.outputs.snap }}
 
+      - name: Publish console log
+        # Mirror the Actions raw console log of THIS job into the SAME
+        # teaching-ci-debug/<repo>/<run_id>-<run_attempt>/ bundle as
+        # "Publish debug bundle" above — completing the forensic trio:
+        # quarto-exec.log (quarto's own log) + hang-forensics/ (watchdog) +
+        # job-console.log (the exact Actions-UI raw log). Rationale: the raw
+        # log is the only complete step-level stdout record on the self-hosted
+        # lanes and it now survives artifact-pool quota reds by riding the
+        # same server transport.
+        # API path: GET runs/{run}/jobs -> numeric id of the job whose name ==
+        # github.job, then GET jobs/{numeric}/logs (302 to a signed blob,
+        # followed with curl -L). The logs endpoint is numeric-id-only — it
+        # 404s on the string job key (verified empirically 2026-10-19 against
+        # a live run), hence the resolution step.
+        # PARTIAL-LOG CAVEAT: this step runs mid-job, so the log covers the
+        # steps up to now — by design sufficient (hang/failure forensics are
+        # already on disk in the earlier steps); a still-running job can also
+        # return 202/empty, which the size gate below turns into
+        # warning + exit 0.
+        # STRICTLY BEST-EFFORT: continue-on-error + every failure branch emits
+        # ::warning:: and exits 0 — never fails the render job. The auth
+        # posture (secret via env only, mktemp 600 + EXIT trap, literal host,
+        # StrictHostKeyChecking=accept-new, path-segment validation, rsync -az
+        # --mkpath WITHOUT --delete / scp fallback on tool absence) is copied
+        # from "Publish debug bundle" — the two steps stay deliberately
+        # self-contained. No retention sweep here: the debug-bundle step's
+        # 14-day sweep covers the shared run dir (same consumers, same gate).
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_JOB_ID: ${{ github.job }}
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+          REPO: ${{ github.event.repository.name }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -uo pipefail
+          HOST="bruno@vai.univ-tln.fr"
+          CONSOLE="$RUNNER_TEMP/job-console.log"
+          if [ -z "${TEACHING_DEPLOY_SSH_KEY:-}" ]; then
+            echo ">> console log: TEACHING_DEPLOY_SSH_KEY not visible for this repo — skipping"
+            exit 0
+          fi
+          # Resolve THIS job's numeric Actions id (the logs endpoint is
+          # numeric-only). python3 is runner-proven (used by "Package rendered
+          # output" on every green render); a parse miss lands on the warning path.
+          JOBS_JSON="$RUNNER_TEMP/jobs-list.json"
+          if ! curl -sL -f -H "Authorization: Bearer $GITHUB_TOKEN" \
+               -H "Accept: application/vnd.github+json" \
+               -o "$JOBS_JSON" \
+               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs"; then
+            echo "::warning::console log: jobs-list fetch failed for run $RUN_ID — skipping (render verdict unchanged)"
+            exit 0
+          fi
+          JOB_NUM=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(next((str(j['id']) for j in d.get('jobs',[]) if j.get('name')==sys.argv[2]),''))" "$JOBS_JSON" "$GITHUB_JOB_ID" 2>/dev/null || true)
+          if [[ ! "${JOB_NUM:-}" =~ ^[0-9]+$ ]]; then
+            echo "::warning::console log: could not resolve numeric job id for '$GITHUB_JOB_ID' — skipping"
+            exit 0
+          fi
+          # Raw job log: 4xx fails -f; a running job may answer 202 + empty body
+          # (2xx passes -f, lands on the size gate below).
+          if ! curl -sL -f -H "Authorization: Bearer $GITHUB_TOKEN" \
+               -o "$CONSOLE" \
+               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_NUM/logs"; then
+            echo "::warning::console log: log download failed for job $JOB_NUM — skipping (render verdict unchanged)"
+            exit 0
+          fi
+          if [ ! -s "$CONSOLE" ] || [ "$(wc -c < "$CONSOLE")" -le 100 ]; then
+            echo "::warning::console log: downloaded file missing or <=100 bytes (running-job partial) — skipping publish"
+            exit 0
+          fi
+          # Path-segment validation (mirrors "Publish debug bundle"); fail-CLOSED
+          # on the remote path, fail-SOFT on the job.
+          if [[ ! "$REPO" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] || [[ "$REPO" == "." || "$REPO" == ".." ]]; then
+            echo "::warning::console log: invalid repo path segment '$REPO' — skipping server publish"
+            exit 0
+          fi
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]] || [[ ! "$ATTEMPT" =~ ^[0-9]+$ ]]; then
+            echo "::warning::console log: non-numeric run id/attempt ($RUN_ID-$ATTEMPT) — skipping server publish"
+            exit 0
+          fi
+          DEST="teaching-ci-debug/$REPO/$RUN_ID-$ATTEMPT"
+          KEY="$(mktemp /tmp/teaching-debug-key.XXXXXX)"
+          trap 'rm -f "$KEY"' EXIT
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          if ! ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "$HOST" "mkdir -p -- '$DEST'"; then
+            echo "::warning::console log: remote mkdir failed for $DEST — skipping (render verdict unchanged)"
+            exit 0
+          fi
+          RC=1
+          if command -v rsync >/dev/null 2>&1; then
+            # Append-only forensics tree: -az --mkpath, NO --delete (same flag family).
+            rsync -az --mkpath -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "$CONSOLE" "$HOST:$DEST/job-console.log" && RC=0
+          else
+            echo "::notice::rsync absent — scp fallback (same validated destination)"
+            scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$CONSOLE" "$HOST:$DEST/job-console.log" && RC=0
+          fi
+          if [ "$RC" != 0 ]; then
+            echo "::warning::console log: transfer to $HOST:$DEST/ failed — non-fatal (render verdict unchanged)"
+            exit 0
+          fi
+          echo "✅ console log published: $HOST:~/$DEST/job-console.log ($(wc -c < "$CONSOLE") bytes)"
+
   deploy-static:
     needs: render
     # Gate (v1.3.22): opt-in input + push/delete event. Le REF ne décide plus de
