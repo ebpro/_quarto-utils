@@ -1497,7 +1497,10 @@ jobs:
         # github.job, then GET jobs/{numeric}/logs (302 to a signed blob,
         # followed with curl -L). The logs endpoint is numeric-id-only — it
         # 404s on the string job key (verified empirically 2026-10-19 against
-        # a live run), hence the resolution step.
+        # a live run), hence the resolution step. Name match tolerates the
+        # reusable-workflow listing form "caller / job" (e.g. "render / render",
+        # observed live 2026-10-19 on the branch-ref self-test run) as well as
+        # the bare job key.
         # PARTIAL-LOG CAVEAT: this step runs mid-job, so the log covers the
         # steps up to now — by design sufficient (hang/failure forensics are
         # already on disk in the earlier steps); a still-running job can also
@@ -1539,7 +1542,7 @@ jobs:
             echo "::warning::console log: jobs-list fetch failed for run $RUN_ID — skipping (render verdict unchanged)"
             exit 0
           fi
-          JOB_NUM=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(next((str(j['id']) for j in d.get('jobs',[]) if j.get('name')==sys.argv[2]),''))" "$JOBS_JSON" "$GITHUB_JOB_ID" 2>/dev/null || true)
+          JOB_NUM=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); w=sys.argv[2]; print(next((str(j['id']) for j in d.get('jobs',[]) if j.get('name')==w or str(j.get('name','')).rsplit('/',1)[-1].strip()==w),''))" "$JOBS_JSON" "$GITHUB_JOB_ID" 2>/dev/null || true)
           if [[ ! "${JOB_NUM:-}" =~ ^[0-9]+$ ]]; then
             echo "::warning::console log: could not resolve numeric job id for '$GITHUB_JOB_ID' — skipping"
             exit 0
