@@ -1,0 +1,75 @@
+/*-- scss:defaults --*/
+// Thème « Moderne » — didactique suisse : Inter, blanc, accent ardoise, aucun filet sauf barre 2px sous h1.
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+$body-bg: #FFFFFF;
+$body-color: #111418;
+$link-color: #334E68;
+$primary: #334E68;
+$font-family-sans-serif: 'Inter', system-ui, sans-serif;
+$font-family-monospace: 'JetBrains Mono', monospace;
+$headings-font-family: 'Inter', system-ui, sans-serif;
+$headings-font-weight: 700;
+$headings-color: #111418;
+
+/*-- scss:rules --*/
+// HTML
+body { font-family: 'Inter', system-ui, sans-serif; }
+h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.02em; }
+h2, h3 { letter-spacing: -0.015em; }
+// accent sous les h1 de section uniquement (pas le bloc de titre)
+main > .section > h1 { border-bottom: 2px solid #334E68; padding-bottom: 0.5rem; }
+.quarto-title h1 { border-bottom: none; font-size: 2.8rem; }
+.quarto-title .subtitle { font-weight: 300; color: #52606D; }
+.quarto-title-meta, .quarto-title .author {
+  font-variant: small-caps;
+  color: #627583;
+  letter-spacing: 0.04em;
+}
+blockquote {
+  border-left: 2px solid #334E68;
+  padding-left: 1rem;
+  color: #3E4C59;
+}
+
+// Revealjs
+.reveal { font-family: 'Inter', system-ui, sans-serif; color: #111418; }
+.reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-transform: none;
+  color: #111418;
+}
+.reveal .slides > section.title-block .subtitle { font-weight: 300; color: #52606D; }
+.reveal .slides > section.title-block .author,
+.reveal .slides > section.title-block .date {
+  font-variant: small-caps;
+  color: #627583;
+}
+.reveal .slide-background { background-color: #FFFFFF !important; }
+.reveal a { color: #334E68; }
+
+// ————— Badges Input/Output —————
+// Neutralise les badges Input/Output globaux de custom.scss (compilés en union).
+// Sélecteurs repris verbatim de _quarto-utils/custom.scss (::before, groupes input et output) ;
+// la couche du lab compile APRÈS custom.scss -> spécificité égale, dernière règle gagne.
+.cell > .code-copy-outer-scaffold > .sourceCode.cell-code::before,
+.cell > .sourceCode.cell-code::before,
+.cell > pre.sourceCode:first-of-type::before,
+.cell > .cell-code:first-of-type::before {
+  content: none;
+}
+
+.cell > .output_area::before,
+.cell > .output::before,
+.cell.output::before,
+div.output::before,
+.output_area::before,
+.rendered_html::before,
+.quarto-output::before,
+.html-widget::before,
+.figure::before,
+div.cell-output::before {
+  content: none;
+}

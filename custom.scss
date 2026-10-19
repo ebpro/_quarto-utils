@@ -420,3 +420,21 @@ $cx-output-parts: (
 .cell.cell-source::after  { @include cx-badge("java"); }
 .cell.cell-html::after    { @include cx-badge("html"); }
 .cell.cell-db::after      { @include cx-badge("SQL"); }
+// ————— revealjs : bande reservee pour la pastille —————
+// En diaporama, l'aire de la cellule est comprimee : le bloc de code demarre
+// au sommet du wrapper et la pastille absolue (top: 0.45rem, mesuree sur la
+// padding box du wrapper) survolait la premiere ligne de code — et la colonne
+// de numeros de ligne quand `code-line-numbers: true`. Le padding-top pousse
+// le contenu SOUS la pastille (dont la coordonnee ne depend pas du padding du
+// conteneur) : 0.45rem + hauteur de la pastille (~1.04rem : 0.625rem x 1.5
+// + 0.1rem de padding vertical) < 1.5rem. La regle est portee par l'ancetre
+// `.reveal`, absent des pages html simples et inexistant en typst (PDF) : les
+// rendu html/typst sont inchanges ; les regles de base ci-dessus sont
+// intactes, seule cette regle portee est ajoutee.
+.reveal .cell.cell-console,
+.reveal .cell.cell-fs,
+.reveal .cell.cell-source,
+.reveal .cell.cell-html,
+.reveal .cell.cell-db {
+  padding-top: 1.5rem;
+}

@@ -21,12 +21,18 @@ format:
   typst:
     toc: true
     section-numbering: 1.1.a
-    columns: 2
+    columns: 1
     titlepage: true
     figure-numbering: true
     table-numbering: true
     citation-style: apa
-    font-family: "Linux Libertine"
+    # Typographie « Moderne » (verdict utilisateur 2026-10-19, lab leçon 02).
+    # font-paths résolu depuis la racine du projet consommateur ; instances
+    # STATIQUES uniquement (les TTF variables échouent silencieusement en CI).
+    font-paths: _quarto-utils/fonts
+    mainfont: "Inter"
+    sansfont: "Inter"
+    codefont: "JetBrains Mono"
     font-size: 12pt
     color: "#333366"
     header: "Titre du document"
@@ -34,10 +40,12 @@ format:
 
   html:
     theme: 
-      light: [flatly, _quarto-utils/custom.scss]
-      dark:  [darkly,  _quarto-utils/custom.scss]  
-      #light: [flatly]
-      #dark:  [darkly]  
+      # Défaut flotte « Moderne » (verdict utilisateur 2026-10-19, lab leçon 02) :
+      # base cosmo + couche claire, variante sombre darkly + couche sombre ; custom.scss
+      # reste en dernier (couche cell-UX additive). Escape hatch par dépôt : un
+      # _metadata.yml (ou front matter) qui redéfinit format.html.theme.
+      light: [cosmo, _quarto-utils/moderne.scss, _quarto-utils/custom.scss]
+      dark:  [darkly, _quarto-utils/moderne-dark.scss, _quarto-utils/custom.scss]
 
     toc: true
     # CENTRALISÉ ICI : css est sémantique « replace-not-merge » (le front matter
