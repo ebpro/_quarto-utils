@@ -68,6 +68,11 @@ on:
         required: false
         type: string
         default: 'artifact'
+      seo-directives:
+        description: 'Index directives on deployed HTML (default-on): push to the DEFAULT branch (develop/ family) -> website.site-url + format.html.canonical-url (Quarto emits the canonical link + a per-repo sitemap.xml); push to any OTHER branch (previews/<slug>/ family) -> <meta name="robots" content="noindex, follow"> on the rendered HTML/Revealjs pages. Tags/releases get NO directive (release canonical strategy pending fleet v-tag adoption); pull_request renders are skipped entirely. Set false per-wrapper to opt out.'
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
@@ -365,6 +370,7 @@ jobs:
           DEPLOY_STATIC: ${{ inputs.deploy-static }}
           TEACHING_BASE_URL: ${{ secrets.TEACHING_BASE_URL }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SEO_DIRECTIVES: ${{ inputs.seo-directives }}
         run: |
           RENDER_CONTAINER="quarto-render-${RUN_ID}"
           # Extra docker-run args. The base env and the 'dind' host mapping are
@@ -422,6 +428,45 @@ jobs:
               exit 1
             fi
           fi
+          # --- v1.3.37-proposal: règle réf -> famille, SOURCE UNIQUE --------------
+          # Factorisée ici (appelée par le bloc baseurl deploy-static ET par le bloc
+          # directives SEO ci-dessous) pour qu'ils ne puissent pas dériver. Messages
+          # et codes de sortie du chemin baseurl IDENTIQUES à la règle v1.3.22.
+          sanitize_refname() {
+            local slug="${1//\//-}"
+            case "$slug" in
+              *[!A-Za-z0-9._-]*|"")
+                echo "::error::nom de réf non sûr pour un chemin serveur: '$1' (slug '$slug'); seuls [A-Za-z0-9._-] et / sont acceptés" >&2
+                return 1 ;;
+            esac
+            printf '%s' "$slug"
+          }
+          # Echoe develop | previews/<slug> | releases/<tag> pour les déployables.
+          # rc=1: nom de branche non sûr (::error déjà émis sur stderr).
+          # rc=2: réf non déployée (tag non-v*, refs/pull/*). rc=3: réf malformée.
+          ref_family() {
+            local REF="$1" REFNAME SLUG
+            case "$REF" in
+              refs/heads/*)
+                REFNAME="${REF#refs/heads/}"
+                if [ "$REFNAME" = "$DEFAULT_BRANCH" ]; then
+                  printf 'develop'
+                else
+                  SLUG="$(sanitize_refname "$REFNAME")" || return 1
+                  printf 'previews/%s' "$SLUG"
+                fi
+                ;;
+              refs/tags/v*)
+                printf 'releases/%s' "${REF#refs/tags/}"
+                ;;
+              refs/tags/*|refs/pull/*)
+                return 2
+                ;;
+              *)
+                return 3
+                ;;
+            esac
+          }
           # --- DORMANT deploy-static: injection de baseurl ------------------------
           # Quand le wrapper opte (deploy-static=true), on calcule un baseurl ancré
           # sur l'emplacement par dépôt / par branche du serveur personnel et on
@@ -445,48 +490,44 @@ jobs:
             #   refs/heads/<branche> -> previews/<slug>  ( / -> - ; [A-Za-z0-9._-] uniquement)
             #   refs/tags/v*         -> releases/<tag>
             #   refs/tags/<non-v*>   -> pas de déploiement -> pas de baseurl (notice)
+            #   refs/pull/*          -> pas de déploiement -> pas de baseurl (warning)
             #   autre                -> erreur
-            sanitize_refname() {
-              local slug="${1//\//-}"
-              case "$slug" in
-                *[!A-Za-z0-9._-]*|"")
-                  echo "::error::nom de réf non sûr pour un chemin serveur: '$1' (slug '$slug'); seuls [A-Za-z0-9._-] et / sont acceptés" >&2
-                  return 1 ;;
+            # (Règle v1.3.22 ; la logique est factorisée dans ref_family() ci-dessous,
+            #  partagée avec les directives d'indexation SEO — source unique, pas de dérive.)
+            # NB: pas de `if ! cmd` ici — `!` écrase $? (toujours 0 dans le then) ;
+            # capture explicite via `|| RC=$?` (sain sous bash -e).
+            SUBPATH=""
+            RC=0
+            SUBPATH="$(ref_family "$GITHUB_REF")" || RC=$?
+            if [ "$RC" -ne 0 ]; then
+              SUBPATH=""
+              case "$RC" in
+                1) exit 1 ;;
+                2)
+                  case "$GITHUB_REF" in
+                    refs/tags/*)
+                      echo "::notice::deploy-static: tag non-v '${GITHUB_REF#refs/tags/}' ignoré — rendu sans baseurl (pas de déploiement, règle v1.3.22)"
+                      ;;
+                    *)
+                      # v1.3.32: un événement pull_request (refs/pull/N/merge|head) est un
+                      # contexte NON déployé — le job deploy-static n'exécute déjà que sur
+                      # push/delete (if: github.event_name == 'push' || 'delete'). Le `*)`
+                      # hérité de la règle v1.3.22 faisait exit 1 sur ces refs, donc ROUGE
+                      # systématique (fake red) sur toute l'auto-CI de _quarto-utils et sur
+                      # tout wrapper appelant en pull_request (cas documenté: PR #27,
+                      # 'refs/pull/27/merge' -> ::error + exit 1 dans le step render).
+                      # Même traitement que tag non-v : avis + rendu SANS override baseurl
+                      # (SUBPATH vide -> branche « rendu sans override » ci-dessous).
+                      echo "::warning::deploy-static=true mais GITHUB_REF '$GITHUB_REF' est un événement pull_request (contexte non déployé) — rendu sans override baseurl"
+                      ;;
+                  esac
+                  ;;
+                *)
+                  echo "::error::deploy-static=true mais GITHUB_REF '$GITHUB_REF' n'est ni une branche ni un tag; rendu avec baseurl refusé"
+                  exit 1
+                  ;;
               esac
-              printf '%s' "$slug"
-            }
-            case "$GITHUB_REF" in
-              refs/heads/*)
-                REFNAME="${GITHUB_REF#refs/heads/}"
-                if [ "$REFNAME" = "$DEFAULT_BRANCH" ]; then
-                  SUBPATH="develop"
-                else
-                  SUBPATH="previews/$(sanitize_refname "$REFNAME")" || exit 1
-                fi
-                ;;
-              refs/tags/v*)
-                SUBPATH="releases/${GITHUB_REF#refs/tags/}"
-                ;;
-              refs/tags/*)
-                echo "::notice::deploy-static: tag non-v '${GITHUB_REF#refs/tags/}' ignoré — rendu sans baseurl (pas de déploiement, règle v1.3.22)"
-                ;;
-              refs/pull/*)
-                # v1.3.32: un événement pull_request (refs/pull/N/merge|head) est un
-                # contexte NON déployé — le job deploy-static n'exécute déjà que sur
-                # push/delete (if: github.event_name == 'push' || 'delete'). Le `*)`
-                # hérité de la règle v1.3.22 faisait exit 1 sur ces refs, donc ROUGE
-                # systématique (fake red) sur toute l'auto-CI de _quarto-utils et sur
-                # tout wrapper appelant en pull_request (cas documenté: PR #27,
-                # 'refs/pull/27/merge' -> ::error + exit 1 dans le step render).
-                # Même traitement que tag non-v : avis + rendu SANS override baseurl
-                # (SUBPATH vide -> branche « rendu sans override » ci-dessous).
-                echo "::warning::deploy-static=true mais GITHUB_REF '$GITHUB_REF' est un événement pull_request (contexte non déployé) — rendu sans override baseurl"
-                ;;
-              *)
-                echo "::error::deploy-static=true mais GITHUB_REF '$GITHUB_REF' n'est ni une branche ni un tag; rendu avec baseurl refusé"
-                exit 1
-                ;;
-            esac
+            fi
             if [ -z "$SUBPATH" ]; then
               # Assouplissement v1.3.22 (décision lead) : refs/tags/<non-v*> ->
               # pas de déploiement -> rendu SANS override baseurl, avec la notice
@@ -496,6 +537,40 @@ jobs:
               BASEURL="${BASEPATH}/${REPO}/${SUBPATH}/"
               echo "ℹ️  deploy-static: BASEURL=$BASEURL"
               BASEURL_ARG=" --metadata baseurl=$BASEURL"
+            fi
+          fi
+          # --- SEO: directives d'indexation par famille (input seo-directives) ----
+          # Même règle ref_family() que le bloc baseurl (source unique, cf. above) :
+          #   famille develop   -> website.site-url -> canonical + sitemap.xml Quarto
+          #   famille previews  -> <meta name="robots" content="noindex, follow">
+          #   releases/tags, pull_request, autres refs -> AUCUNE injection (les
+          #   releases gardent la stratégie canonical actuelle, question ouverte
+          #   d'indexation v-tag dans la flotte; PR: jamais publié -> rien à marquer).
+          # Mécanisme: _quarto.yml.local ("Local Config", couche documentée de
+          # Quarto, fusion profonde sur _quarto.yml + profil actif; les listes
+          # include-in-header s'APPENDENT, fusion non-remplacement — vérifié sur
+          # l'image de rendu de la flotte, Quarto 1.10.18, 2026-10-19). Le flag CLI
+          # `--config` n'existe PAS pour `quarto render` de projet en 1.10.18 (il
+          # fuit vers pandoc: "Unknown option --config", rendu rouge — même date).
+          # Fichier NON TRACKÉ, régénéré par profil dans la boucle ci-dessous et
+          # supprimé inconditionnellement ici (workspace self-hosted persistant ->
+          # pas de fuite de directives develop -> previews entre runs).
+          rm -f "$GITHUB_WORKSPACE/_quarto.yml.local"
+          SEO_FAMILY=""
+          if [ "${SEO_DIRECTIVES:-true}" = "true" ] && [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            SEO_FAMILY="$(ref_family "$GITHUB_REF" 2>/dev/null)" || SEO_FAMILY=""
+            case "$SEO_FAMILY" in
+              develop)
+                if [ -z "$TEACHING_BASE_URL" ]; then
+                  echo "::warning::seo-directives=true mais le secret d'org TEACHING_BASE_URL est vide; aucun directive SEO injecté"
+                  SEO_FAMILY=""
+                fi
+                ;;
+              previews/*) : ;;
+              *) SEO_FAMILY="" ;;
+            esac
+            if [ -n "$SEO_FAMILY" ]; then
+              echo "ℹ️  seo-directives: famille '$SEO_FAMILY' -> _quarto.yml.local généré à chaque profil"
             fi
           fi
           # -----------------------------------------------------------------------
@@ -579,6 +654,31 @@ jobs:
           fi
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
+            # v1.3.37-proposal: régénère la couche locale pour CE profil (rm
+            # d'abord: contenu dépend du profil). Le bloc revealjs n'est émis QUE
+            # pour les profils slides/revealjs: injecter format.revealjs pendant
+            # un rendu notes reproduit la collision double-sortie <slug>.html /
+            # safeMoveSync (classe « proven lesson 1 », reproduite live sur
+            # l'image de rendu 2026-10-19). Côté develop, website.site-url est
+            # toléré par tous les profils (vérifié notes+slides, exit 0).
+            rm -f "$GITHUB_WORKSPACE/_quarto.yml.local"
+            case "$SEO_FAMILY" in
+              develop)
+                printf 'website:\n  site-url: "%s/develop/"\nformat:\n  html:\n    canonical-url: true\n' \
+                  "${TEACHING_BASE_URL%/}/$(basename "$GITHUB_REPOSITORY")" \
+                  > "$GITHUB_WORKSPACE/_quarto.yml.local"
+                ;;
+              previews/*)
+                {
+                  printf 'format:\n  html:\n    include-in-header:\n      - text: |\n          <meta name="robots" content="noindex, follow">\n'
+                  case "$p" in
+                    *slides*|*revealjs*)
+                      printf '  revealjs:\n    include-in-header:\n      - text: |\n          <meta name="robots" content="noindex, follow">\n'
+                      ;;
+                  esac
+                } > "$GITHUB_WORKSPACE/_quarto.yml.local"
+                ;;
+            esac
             # --log: always write quarto's log into the workspace (mounted at
             # /workdir INSIDE the container — $GITHUB_WORKSPACE is a host path
             # that does not exist in the container, so the flag value is the
