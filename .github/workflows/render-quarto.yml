@@ -63,6 +63,22 @@ on:
         required: false
         type: string
         default: '5g'
+      hang-action:
+        # v1.3.37: per-repo escape hatch. The input description of
+        # hang-detection-minutes tells users to RAISE THE CAP for known
+        # long-silent-cell content; that trades the hang for a blind wait.
+        # report-only separates the two concerns: keep detecting, keep
+        # reporting, keep shipping forensics — stop killing.
+        # Default 'kill' preserves the v1.3.36 contract bit-for-bit.
+        description: 'v1.3.37: what the hang watchdog does once sustained silence has been corroborated as a genuine stall (no kernel child, or zero CPU delta). kill (default) = the v1.3.36 contract: ::error::HANG-DETECTED, forensics, docker kill, exit 137 via PIPESTATUS. report-only = escape hatch for known long-silent-cell content: the HANG-DETECTED annotation, the hang-report and both forensics transports are retained, but NO docker kill is issued and render-timeout-minutes stays the sole backstop. Default-off (kill): zero behaviour change for every wrapper that does not set it.'
+        required: false
+        type: string
+        default: 'kill'
+      hang-max-extensions:
+        description: 'v1.3.37: BOUND on the liveness corroborator. When a kernel child is present AND accumulating CPU across two docker-top samples, the watchdog does not kill: it emits ::warning::LIVE-KERNEL-CORROBORATED and re-arms for WATCHDOG_EXTEND_SECS (300 s). This input caps how many such extensions may be granted, so a hang can never become unbounded: worst case = hang-detection-minutes + (N x 5 min), N=3 by default (+15 min). 0 = never extend, i.e. the pre-v1.3.37 kill-on-silence behaviour. Only reachable when hang-detection-minutes is non-zero.'
+        required: false
+        type: number
+        default: 3
       freeze:
         description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. v1.3.27: default switched to FALSE — pins must not silently adopt the freeze machinery; wrappers opt in explicitly with `freeze: true`. Set false (default) to force full cold execution.'
         required: false
@@ -630,18 +646,133 @@ jobs:
           # `docker run` exits non-zero. The PIPESTATUS branch below stays the SOLE
           # step-status decider (subshell runs `set +e`, every probe `|| true`; the
           # guarded if keeps the main `bash -e` shell inert when the feature is off).
+          #
+          # v1.3.37 — INACTIVITY IS A TRIGGER, NOT A VERDICT. The pre-v1.3.37 sidecar
+          # killed on the mtime deadline alone and only inspected kernel state AFTER the
+          # decision, so a legitimately-busy-but-silent cell (a live python3 kernel
+          # compiling/loading, no stream output) was indistinguishable from a wedged one.
+          # DEV-EXP run 39201344899 / job 117894776666 is exactly that shape: the trip
+          # was correct-by-rule at [17/32] with a kernel started 2.5 s earlier, and the
+          # evidence needed to attribute it was destroyed by the artifact-quota error.
+          # Before ANY kill the sidecar now corroborates liveness with two `docker top`
+          # samples WATCHDOG_PROBE_SECS apart, reading per-PID CPU from
+          # $PROC_ROOT/<pid>/stat (utime+stime clock ticks) and falling back to the ps
+          # TIME column when /proc is unreadable. Verdicts:
+          #   kernel child present AND accumulating CPU -> NO kill:
+          #     ::warning::LIVE-KERNEL-CORROBORATED (names the live PID, the CPU delta
+          #     and the elapsed silence) + a bounded re-arm. See hang-max-extensions:
+          #     the bound is what keeps a 20-min cap from becoming an unbounded hang.
+          #   no kernel child, OR zero CPU delta across both samples -> the v1.3.36
+          #     path VERBATIM: ::error::HANG-DETECTED -> forensics -> docker kill ->
+          #     exit 137. Message shape and exit code are an encoded contract.
+          #   process table vanished during the probe and the container is no longer
+          #     running -> ::notice::HANG-WATCHDOG-STOOD-DOWN, no kill, no false error.
+          # Every new outcome uses a NEW marker; HANG-DETECTED is never modified.
+          # hang-detection-minutes=0 still disables the whole block: the guard below
+          # is byte-identical, so the 35 wrappers that never set it are unaffected.
+          # >>> WATCHDOG-BEGIN — extracted verbatim by scripts/test-hang-watchdog.sh;
+          #     do not reflow the sentinels or change the block's variable surface.
           HANG_MIN="${{ inputs.hang-detection-minutes }}"
+          HANG_MODE="${{ inputs.hang-action }}"
+          HANG_EXT_MAX="${{ inputs.hang-max-extensions }}"
+          case "$HANG_MODE" in
+            kill|report-only) ;;
+            *)
+              echo "::warning::HANG-WATCHDOG-CONFIG: unknown hang-action '$HANG_MODE' — falling back to 'kill' (the v1.3.36 contract)"
+              HANG_MODE="kill"
+              ;;
+          esac
+          case "$HANG_EXT_MAX" in
+            ''|*[!0-9]*)
+              echo "::warning::HANG-WATCHDOG-CONFIG: hang-max-extensions '$HANG_EXT_MAX' is not a non-negative integer — using 3"
+              HANG_EXT_MAX=3
+              ;;
+          esac
+          # Tunables. `: "${V:=d}"` (not a plain assignment) is deliberate: it is the
+          # seam scripts/test-hang-watchdog.sh uses to fast-forward the sidecar, and it
+          # costs nothing on the runner. Values in seconds.
+          : "${WATCHDOG_POLL_SECS:=30}"
+          : "${WATCHDOG_PROBE_SECS:=60}"
+          : "${WATCHDOG_EXTEND_SECS:=300}"
+          : "${PROC_ROOT:=/proc}"
           WATCHDOG_PID=""
           if [ -n "$HANG_MIN" ] && [ "$HANG_MIN" != "0" ]; then
             echo ">> Hang watchdog armed: ${HANG_MIN}-min inactivity cap (container: $RENDER_CONTAINER)"
+            echo ">> Liveness corroboration ON: probe ${WATCHDOG_PROBE_SECS}s x2, extend ${WATCHDOG_EXTEND_SECS}s, max ${HANG_EXT_MAX} extensions (worst-case cap $(( HANG_MIN + (HANG_EXT_MAX * WATCHDOG_EXTEND_SECS / 60) )) min), action=${HANG_MODE}"
             (
               set +e
               LIMIT=$(( HANG_MIN * 60 ))
               FORENSICS_DIR="$GITHUB_WORKSPACE/hang-forensics"
               mkdir -p "$FORENSICS_DIR"
               DEADLINE=$(( $(date +%s) + LIMIT ))
+              EXTEND_UNTIL=0
+              EXT=0
+              # wd_procs -> "<hostpid>\t<cpu>\t<cmd>" per container process, cpu in
+              # hundredths of a second from the ps TIME column (the floor reading;
+              # wd_cpu_ticks overrides it with finer /proc ticks when available).
+              # Plain `docker top` (no -o/--format) is used on purpose: `-o` is not a
+              # docker-top option and would be forwarded to ps inconsistently. The
+              # default ps -ef layout is UID PID PPID C STIME TTY TIME CMD, so $2 is
+              # the HOST pid and $7 the cumulative CPU time.
+              wd_procs() {
+                docker top "$RENDER_CONTAINER" 2>/dev/null | awk '
+                  NR == 1 { next }
+                  NF >= 8 {
+                    pid = $2; tm = $7; cmd = $8
+                    for (i = 9; i <= NF; i++) cmd = cmd " " $i
+                    n = split(tm, a, ":"); sec = 0
+                    for (j = 1; j <= n; j++) sec = sec * 60 + (a[j] + 0)
+                    printf "%s\t%d\t%s\n", pid, sec * 100, cmd
+                  }'
+              }
+              # wd_cpu_ticks <pid> -> utime+stime clock ticks from /proc, or exit != 0.
+              # Fields 1-2 (pid, comm) are stripped with ${s##*) } because comm may
+              # contain spaces; utime/stime are then the 12th/13th remaining tokens.
+              # A mismatched CONFIG_HZ only rescales the delta — the corroborator tests
+              # the SIGN of the delta, never its magnitude, so it stays correct.
+              wd_cpu_ticks() {
+                local raw
+                [ -r "$PROC_ROOT/$1/stat" ] || return 1
+                raw=$(cat "$PROC_ROOT/$1/stat" 2>/dev/null) || return 1
+                raw="${raw##*) }"
+                awk -v s="$raw" 'BEGIN {
+                  n = split(s, f, /[ \t]+/)
+                  if (n < 13) exit 1
+                  t = f[12] + f[13]
+                  if (t !~ /^[0-9]+$/) exit 1
+                  print t
+                }'
+              }
+              # wd_snapshot -> "<total_cpu>|<kernel_pid>|<kernel_cpu>", empty (status 1)
+              # when the container exposes no process table at all (already gone, or
+              # `docker top` unusable). That is deliberately NOT read as "dead": the
+              # caller re-checks with wd_running before suppressing the report, and the
+              # pre-v1.3.37 kill semantics stay reachable — fail-toward-today, never
+              # fail-open into an unbounded run.
+              wd_snapshot() {
+                local procs pid cpu cmd total kpid kcpu ticks
+                procs=$(wd_procs)
+                [ -n "$procs" ] || return 1
+                total=0; kpid=""; kcpu=0
+                while IFS=$'\t' read -r pid cpu cmd; do
+                  [ -n "$pid" ] || continue
+                  ticks=$(wd_cpu_ticks "$pid") && cpu="$ticks"
+                  total=$(( total + cpu ))
+                  # Kernel-child patterns for the engines this fleet renders with
+                  # (python3/ipykernel, R/IRkernel, julia/IJulia, java jshell,
+                  # JS/deno kernel). DEV-EXP hung on a python3 kernel.
+                  case "$cmd" in
+                    *ipykernel*|*jupyter*|*IRkernel*|*IJulia*|*xeus*|*jshell*|*kernel.js*)
+                      kpid="$pid"; kcpu=$(( kcpu + cpu )) ;;
+                  esac
+                done <<< "$procs"
+                echo "$total|$kpid|$kcpu"
+              }
+              wd_running() {
+                [ "$(docker inspect --format '{{.State.Running}}' "$RENDER_CONTAINER" 2>/dev/null)" = "true" ]
+              }
               while true; do
-                sleep 30
+                sleep "$WATCHDOG_POLL_SECS"
                 NOW=$(date +%s)
                 LOG_MTIME=0
                 for f in "$RENDER_LOG" "$GITHUB_WORKSPACE/quarto-exec.log"; do
@@ -655,12 +786,59 @@ jobs:
                 fi
                 DEADLINE=$(( LOG_MTIME + LIMIT ))
                 [ "$NOW" -le "$DEADLINE" ] && continue
+                # Granted liveness extension still in force: stay quiet.
+                [ "$NOW" -le "$EXTEND_UNTIL" ] && continue
                 SILENT_MIN=$(( (NOW - LOG_MTIME) / 60 ))
                 PAGE=$(sed 's/\x1b\[[0-9;]*m//g' "$RENDER_LOG" 2>/dev/null | grep -oE '\[[0-9]+/[0-9]+\]' | tail -1)
                 [ -n "$PAGE" ] || PAGE="unknown"
+                # ---- v1.3.37: corroborate BEFORE deciding --------------------------
+                LIVE=0; LIVE_PID=""; LIVE_DELTA=0; HAVE_TABLE=1
+                S1=$(wd_snapshot)
+                S2=""
+                if [ -n "$S1" ]; then
+                  sleep "$WATCHDOG_PROBE_SECS"
+                  S2=$(wd_snapshot)
+                fi
+                if [ -z "$S1" ] || [ -z "$S2" ]; then
+                  HAVE_TABLE=0
+                else
+                  # Snapshot fields: 1=container-wide CPU, 2=kernel host PID,
+                  # 3=kernel-child CPU (all in hundredths-of-a-second units when
+                  # /proc is unreadable, native clock ticks when it is readable).
+                  IFS='|' read -r -a SN1 <<< "$S1"
+                  IFS='|' read -r -a SN2 <<< "$S2"
+                  D_ALL=$(( ${SN2[0]:-0} - ${SN1[0]:-0} ))
+                  D_KERN=$(( ${SN2[2]:-0} - ${SN1[2]:-0} ))
+                  K2="${SN2[1]:-}"
+                  # Kernel child present AND CPU accumulating (kernel-scoped delta,
+                  # or container-wide progress if the kernel itself is idle while
+                  # pandoc/typesetting burns CPU). Conservative toward NOT killing.
+                  if [ -n "$K2" ] && { [ "$D_KERN" -gt 0 ] || [ "$D_ALL" -gt 0 ]; }; then
+                    LIVE=1
+                    LIVE_PID="$K2"
+                    if [ "$D_KERN" -gt 0 ]; then LIVE_DELTA="$D_KERN"; else LIVE_DELTA="$D_ALL"; fi
+                  fi
+                fi
+                if [ "$LIVE" -eq 1 ] && [ "$EXT" -lt "$HANG_EXT_MAX" ]; then
+                  EXT=$(( EXT + 1 ))
+                  EXTEND_UNTIL=$(( $(date +%s) + WATCHDOG_EXTEND_SECS ))
+                  echo "::warning::LIVE-KERNEL-CORROBORATED pid=$LIVE_PID cpu-delta=$LIVE_DELTA silence=${SILENT_MIN}min page=${PAGE} — not killing; extension ${EXT}/${HANG_EXT_MAX} granted (+${WATCHDOG_EXTEND_SECS}s)"
+                  continue
+                fi
+                if [ "$LIVE" -eq 1 ]; then
+                  echo "::warning::LIVE-KERNEL-EXTENSIONS-EXHAUSTED after ${EXT} extension(s) (bound hang-max-extensions=${HANG_EXT_MAX}); proceeding to the documented kill path at page ${PAGE}"
+                fi
+                if [ "$HAVE_TABLE" -eq 0 ] && ! wd_running; then
+                  # The render finished (or died) on its own during the probe window.
+                  # Killing a gone container is a no-op, but raising HANG-DETECTED for a
+                  # render that actually completed would be a false error — stay quiet.
+                  echo "::notice::HANG-WATCHDOG-STOOD-DOWN: no process table and container not running after ${SILENT_MIN} min inactivity at page ${PAGE} — no kill issued"
+                  break
+                fi
                 echo "::error::HANG-DETECTED after ${SILENT_MIN} min inactivity at page ${PAGE}"
                 {  # forensics BEFORE kill
                   echo "=== hang-forensics $(date -Is): ${SILENT_MIN} min silent, page ${PAGE} ==="
+                  echo "=== v1.3.37 corroboration: live=$LIVE kernel-pid='${LIVE_PID:-none}' cpu-delta=${LIVE_DELTA:-n/a} container-table=$HAVE_TABLE action=$HANG_MODE extensions=$EXT/$HANG_EXT_MAX ==="
                   echo '--- ps -ef (quarto|docker|jupyter) ---'
                   ps -ef | grep -E 'quarto|docker|jupyter' | grep -v grep || true
                   echo '--- docker ps -a (label=ebpro-render=true) ---'
@@ -686,14 +864,27 @@ jobs:
                   echo '--- ls -la _freeze .quarto ---'
                   ls -la "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" || true
                 } > "$FORENSICS_DIR/hang-report.txt" 2>&1
+                # v1.3.37 (survivability, part 1): echo the report to the sidecar's
+                # stdout so it lands in the RETAINED JOB LOG. Before this change the
+                # whole forensics block was redirected into a file and only ever
+                # APPENDED to $GITHUB_STEP_SUMMARY, so it appeared in neither the job
+                # log nor the artifact until upload — and summary_url is null for these
+                # jobs, so a quota-blocked upload made the report unrecoverable.
+                # Nothing is enlarged: same bytes, one extra transport.
+                cat "$FORENSICS_DIR/hang-report.txt" 2>/dev/null || true
                 cat "$FORENSICS_DIR/hang-report.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-                docker kill "$RENDER_CONTAINER" >/dev/null 2>&1 || true
+                if [ "$HANG_MODE" = "report-only" ]; then
+                  echo "::warning::HANG-REPORT-ONLY page=${PAGE} silence=${SILENT_MIN}min: hang-action=report-only — docker kill SUPPRESSED, render left running; render-timeout-minutes is the remaining backstop"
+                else
+                  docker kill "$RENDER_CONTAINER" >/dev/null 2>&1 || true
+                fi
                 echo "$PAGE" > "$GITHUB_WORKSPACE/.hang-detected" 2>/dev/null || true
                 break
               done
             ) &
             WATCHDOG_PID=$!
           fi
+          # <<< WATCHDOG-END
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
             # v1.3.37-proposal: régénère la couche locale pour CE profil (rm
@@ -1451,7 +1642,16 @@ jobs:
         # the site upload so a successful render also reaches this step while
         # the job is still green (no-op there); if-no-files-found guards the
         # early-failure case where quarto never started.
-        if: failure()
+        # v1.3.37 (survivability, part 2): bare `failure()` EXCLUDES
+        # cancellation, so the single most common human response to a hang
+        # (cancel the run) destroyed the forensics for it. `always()` is what
+        # makes a step reachable once the runner has been asked to cancel; the
+        # explicit `(failure() || cancelled())` guard keeps it off the success
+        # path, so nothing is uploaded on green runs and the uploaded SET of
+        # paths is unchanged (quota pressure is real — see the site-zip
+        # 1-day floor above). continue-on-error stays true: an upload rejected
+        # by the artifact quota must never mask the HANG-DETECTED error.
+        if: always() && (failure() || cancelled())
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -1462,6 +1662,88 @@ jobs:
             hang-forensics/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Ship hang forensics off-cluster
+        # v1.3.37 (survivability, part 3): the quota-immune channel, REUSING the
+        # established staging transport rather than inventing one — same
+        # TEACHING_DEPLOY_SSH_KEY secret, same bruno@vai.univ-tln.fr endpoint,
+        # same per-segment path validation, same ssh-mkdir-then-rsync-with-scp-
+        # fallback posture as "Ensure staging dir" / "Push site to staging".
+        # Lecture artefacts already ship to a server the team owns; a hang report
+        # belongs on that channel because the org artifact pool is a shared,
+        # exhaustible resource (net charges began Sep->Oct 2026; top offender
+        # quarkus-ms-platform at 1,579 GB*h) while the retained job log is not.
+        # Payload is deliberately ONE small file (hang-report.txt, tens of KB) —
+        # never the site, never quarto-exec.log. Bulk stays off-cluster, GHA
+        # artefacts stay tiny.
+        # Non-fatal by construction: `set +e`, every branch exits 0, and
+        # continue-on-error is the backstop. A missing secret (fork PRs), a
+        # missing rsync or an unreachable vai can never change the job verdict.
+        # No event_name gate: the secret-presence check IS the trust boundary
+        # (GitHub does not expose org secrets to forked PR runs), and a cancelled
+        # or failed PR hang is exactly the case worth capturing.
+        if: always() && (failure() || cancelled())
+        continue-on-error: true
+        env:
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+        run: |
+          set +e
+          REPORT="$GITHUB_WORKSPACE/hang-forensics/hang-report.txt"
+          if [ ! -f "$REPORT" ]; then
+            echo ">> No hang-report.txt — off-cluster forensics not applicable to this failure"
+            exit 0
+          fi
+          if [ -z "${TEACHING_DEPLOY_SSH_KEY:-}" ]; then
+            echo "::notice::HANG-FORENSICS-RSYNC-SKIPPED: TEACHING_DEPLOY_SSH_KEY is not visible to this repository — the report still reached the retained job log and the quarto-exec-log artifact"
+            exit 0
+          fi
+          # Receiver-side mirror of the staging guard: re-validate every segment
+          # we are about to interpolate into a remote path. Never a raw output.
+          validate_segment() {
+            local name="$1" seg="$2"
+            if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+               && [[ "$seg" != "." && "$seg" != ".." ]] \
+               && [[ "$seg" != .* && "$seg" != -* ]]; then
+              return 0
+            fi
+            echo "::error::Invalid forensics path segment $name='$seg' — must match ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$ (cap 100, no leading . or -), must not be '.' or '..'"
+            return 1
+          }
+          REPO="$(basename "$GITHUB_REPOSITORY")"
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::GITHUB_RUN_ID is not numeric: '$GITHUB_RUN_ID'"; exit 0; }
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]] || { echo "::error::GITHUB_RUN_ATTEMPT is not numeric: '$GITHUB_RUN_ATTEMPT'"; exit 0; }
+          validate_segment REPO "$REPO" || exit 0
+          validate_segment RUN_DIR "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" || exit 0
+          FORENSICS_DIR="render-hang-forensics/$REPO/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          KEY="$(mktemp /tmp/hang-forensics-key.XXXXXX)" || exit 0
+          # Key lifetime is this step only (mktemp + chmod 600 + trap rm on EXIT),
+          # never echoed — same posture as "Staging key material", but scoped to a
+          # single step so there is no window left open on a cancelled run.
+          trap 'rm -f "$KEY"' EXIT
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY" || exit 0
+          chmod 600 "$KEY"
+          if ! ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "mkdir -p \"$FORENSICS_DIR\""; then
+            echo "::warning::HANG-FORENSICS-RSYNC-FAILED: could not create $FORENSICS_DIR on vai — report remains in the job log and the quarto-exec-log artifact"
+            exit 0
+          fi
+          # Transport: rsync primary, scp fallback on TOOL ABSENCE only — identical
+          # posture to "Push site to staging" (the runner is not guaranteed rsync).
+          # Unlike the site push, a FAILED transfer stays a warning: this step must
+          # never add a second failure mode to a run that already has one.
+          RC=1
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -az -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "$REPORT" "bruno@vai.univ-tln.fr:$FORENSICS_DIR/hang-report.txt" && RC=0
+          else
+            echo "::notice::rsync absent from this runner — scp fallback (same validated destination)"
+            scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$REPORT" "bruno@vai.univ-tln.fr:$FORENSICS_DIR/hang-report.txt" && RC=0
+          fi
+          if [ "$RC" -eq 0 ]; then
+            echo "✅ hang-report.txt shipped off-cluster: bruno@vai.univ-tln.fr:$FORENSICS_DIR/hang-report.txt"
+            echo "::notice::HANG-FORENSICS-SHIPPED bruno@vai.univ-tln.fr:$FORENSICS_DIR/hang-report.txt (quota-immune)"
+          else
+            echo "::warning::HANG-FORENSICS-RSYNC-FAILED (rc=$RC) — report remains in the job log and the quarto-exec-log artifact"
+          fi
+          exit 0
 
       - name: Freeze cache size gate
         id: freeze-size
