@@ -13,7 +13,11 @@ format:
     # Presentation settings
     # theme: [clean, _quarto-utils/custom.scss]
 
-    theme: [_quarto-utils/custom.scss]
+    # Défaut flotte « Moderne » (verdict utilisateur 2026-10-19, lab leçon 02) : deck
+    # blanc — moderne.scss force le fond revealjs en #FFFFFF (light only, officiel :
+    # revealjs ne fait pas de toggle light/dark) ; la base « clean » reste apportée
+    # par l'extension. Escape hatch : front matter clean-revealjs.theme par dépôt.
+    theme: [_quarto-utils/moderne.scss, _quarto-utils/custom.scss]
     # Chemin résolu depuis la racine du projet consommateur (même convention que
     # `theme:` ci-dessus). « replace-not-merge » : un front matter qui redéfinit
     # `css:` remplace cette liste — le préfixer avec `_quarto-utils/reveal-custom.css`.

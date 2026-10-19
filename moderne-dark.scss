@@ -1,0 +1,62 @@
+/*-- scss:defaults --*/
+// Thème « Moderne » — VARIANTE SOMBRE (branche `dark:` de la carte light/dark, leçon 02).
+// Même didactique suisse que moderne.scss (Inter, aucune règle sauf le filet 2 px),
+// transposée sur fond ardoise très sombre ; accent ardoise éclairci. Référencée
+// UNIQUEMENT par le html en mode sombre ; les decks revealjs restent sur moderne.scss.
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+$body-bg: #0F1419;
+$body-color: #E6EAF0;
+$link-color: #82A9CC;
+$primary: #82A9CC;
+$font-family-sans-serif: 'Inter', system-ui, sans-serif;
+$font-family-monospace: 'JetBrains Mono', monospace;
+$headings-font-family: 'Inter', system-ui, sans-serif;
+$headings-font-weight: 700;
+$headings-color: #E6EAF0;
+
+/*-- scss:rules --*/
+// HTML (mode sombre)
+body { font-family: 'Inter', system-ui, sans-serif; }
+h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.02em; }
+h2, h3 { letter-spacing: -0.015em; }
+main > .section > h1 { border-bottom: 2px solid #82A9CC; padding-bottom: 0.5rem; }
+.quarto-title h1 { border-bottom: none; font-size: 2.8rem; }
+.quarto-title .subtitle { font-weight: 300; color: #9AA7B4; }
+.quarto-title-meta, .quarto-title .author {
+  font-variant: small-caps;
+  color: #8B99A8;
+  letter-spacing: 0.04em;
+}
+blockquote {
+  border-left: 2px solid #82A9CC;
+  padding-left: 1rem;
+  color: #A9B7C6;
+}
+code { color: #9CC3E5; }
+pre { background-color: #1A222B !important; }
+.cell pre, div.sourceCode { background-color: #1A222B; }
+
+// ————— Badges Input/Output —————
+// Neutralise les badges Input/Output globaux de custom.scss (compilés en union).
+// Sélecteurs repris verbatim de _quarto-utils/custom.scss (::before, groupes input et output) ;
+// la couche du lab compile APRÈS custom.scss -> spécificité égale, dernière règle gagne.
+.cell > .code-copy-outer-scaffold > .sourceCode.cell-code::before,
+.cell > .sourceCode.cell-code::before,
+.cell > pre.sourceCode:first-of-type::before,
+.cell > .cell-code:first-of-type::before {
+  content: none;
+}
+
+.cell > .output_area::before,
+.cell > .output::before,
+.cell.output::before,
+div.output::before,
+.output_area::before,
+.rendered_html::before,
+.quarto-output::before,
+.html-widget::before,
+.figure::before,
+div.cell-output::before {
+  content: none;
+}
