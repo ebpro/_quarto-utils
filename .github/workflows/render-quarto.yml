@@ -1,5 +1,6 @@
 # v1.3.35: site-zip artifact lifecycle — 1-day retention floor at upload + purge after a successful deploy-static rsync (Team-plan 2 GiB artifact quota).
 # v1.3.31-candidate: hang watchdog for the render step (input hang-detection-minutes, default 0 = off).
+# v1.3.37: hang watchdog liveness corroboration (inputs hang-action default kill, hang-max-extensions default 3) + survivable forensics (job-log echo, cancelled-run transport, off-cluster ship). v1.3.38: OOM self-attribution on the death paths (docker's verdict + sidecar cgroup memory.events to the retained job log); the render-memory bound proposed alongside was superseded by render-memory-limit (2026-10-20).
 name: Render Quarto Documents (reusable)
 
 defaults:
@@ -445,8 +446,55 @@ jobs:
           # fails LOUDLY (OutOfMemoryError in the render log) before the cgroup
           # OOM-killer can act. Cell-spawned siblings (postgres etc.) are NOT
           # bounded here - they are content-controlled.
+          # (v1.3.38 note: the render-memory/2800m bound proposed on the
+          #  watchdog-liveness branch is SUPERSEDED by this pair — 2800m was
+          #  sized for the old 3Gi sidecar; two --memory flags on one
+          #  `docker run` would fight order-dependently. OOM attribution
+          #  below covers the death-path diagnostics for this bound.)
           DOCKER_ARGS+=(--memory="$RENDER_MEMORY_LIMIT")
           DOCKER_ARGS+=(-e "JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=25")
+          # >>> OOM-CAPTURE-BEGIN — extracted verbatim by scripts/test-hang-watchdog.sh
+          #     (case i: every arm must be non-fatal); do not reflow the sentinels.
+          # v1.3.38: OOM self-attribution, emitted to the RETAINED JOB LOG (the
+          # quota-immune transport be6ee49 established). Called on the two death
+          # paths: the watchdog forensics block (container still alive -> the
+          # exec arm adds the container's own cgroup view) and the PIPESTATUS
+          # failure branch (normal death -> runs BEFORE the EXIT trap's rm arm,
+          # so docker inspect may still win the --rm auto-delete race).
+          # The decisive fields are the SIDECAR cgroup's memory.events pair:
+          #   memory.events        aggregates the whole subtree — a docker-
+          #                          enforced OOM of the render child lands here
+          #                          (max/oom/oom_kill) while the sidecar's own
+          #                          cap stayed untouched;
+          #   memory.events.local  fires only when the SIDECAR's own cgroup cap
+          #                          is hit.
+          # Non-zero local counters alongside OOMKilled=false = the old
+          # unattributable shape, now positively attributed to the cluster-side
+          # ceiling instead of the render. ARC runner pods are ephemeral (one
+          # job per pod), so the counters are per-run by construction.
+          # The helper container trick is required because the step's own shell
+          # lives in the RUNNER container's cgroup, a sibling of the sidecar's:
+          # a container started BY the sidecar's dockerd is a cgroup child of
+          # dockerd, hence its parent cgroup IS the sidecar container's cgroup.
+          # --cgroupns=host + a read-only /sys/fs/cgroup bind (resolved in the
+          # daemon's mount namespace) exposes it. The cgroup-v1 fallback reads
+          # the equivalent files. No --oom-score-adj: the cap is cgroup-wide, a
+          # per-process adj does not change which ceiling fires.
+          capture_oom_attribution() {
+            echo "=== oom-attribution ${1:-death} $(date -Is 2>/dev/null || date) ==="
+            docker inspect -f 'OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} OOMKilledAt={{.State.FinishedAt}}' "$RENDER_CONTAINER" 2>/dev/null \
+              || echo "oom-attribution: docker inspect failed (container auto-deleted by --rm, or daemon unreachable)"
+            docker exec "$RENDER_CONTAINER" sh -c 'for f in memory.max memory.current memory.events memory.events.local memory.peak; do echo "--- self-cgroup $f ---"; cat "/sys/fs/cgroup/$f" 2>/dev/null || echo "(absent)"; done' 2>/dev/null \
+              || echo "oom-attribution: self-cgroup not readable (container already gone)"
+            # Single-line sh -c on purpose: shellcheck only parses the literal as an
+            # inner script when sh -c is the direct command (a `timeout 90` prefix or a
+            # multi-line literal both degrade it to plain-string analysis -> SC2016 on
+            # every $var). No timeout wrapper: same un-guarded-daemon posture as the
+            # inspect/exec arms and be6ee49's forensics; step/job timeouts backstop.
+            docker run --rm --cgroupns=host -v /sys/fs/cgroup:/hostcg:ro "$QUARTO_IMAGE" sh -c 'p=$(sed -n "s|^0::|/|p" /proc/1/cgroup 2>/dev/null); if [ -n "$p" ]; then d=$(dirname "$p"); for f in memory.max memory.current memory.events memory.events.local memory.peak; do echo "--- sidecar-cgroup $d $f ---"; cat "/hostcg$d/$f" 2>/dev/null || echo "(absent)"; done; else m=$(sed -n "s|^[0-9]*:memory:|/|p" /proc/1/cgroup 2>/dev/null); if [ -n "$m" ]; then d=$(dirname "$m"); for f in memory.limit_in_bytes memory.usage_in_bytes memory.failcnt memory.oom_control; do echo "--- sidecar-cgroup-v1 $d $f ---"; cat "/hostcg/memory$d/$f" 2>/dev/null || echo "(absent)"; done; else echo "oom-attribution: no cgroup path in /proc/1/cgroup"; fi; fi' 2>/dev/null || echo "oom-attribution: sidecar-cgroup helper failed (cgroupns flag/daemon/mount unsupported)"
+            return 0
+          }
+          # <<< OOM-CAPTURE-END
           if [ "$ENABLE_DOCKER" = "true" ]; then
             # Skip socket mount in DOCKER_ARGS when DOCKER_MOUNTS (auto-detect step) already provides it
             if [ -z "${DOCKER_MOUNTS:-}" ]; then
@@ -845,6 +893,11 @@ jobs:
                   docker ps -a --filter label=ebpro-render=true || true
                   echo "--- docker inspect $RENDER_CONTAINER ---"
                   docker inspect --format '{{.State.Status}} started={{.State.StartedAt}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}}' "$RENDER_CONTAINER" || true
+                  # v1.3.38: memory attribution. Container is still alive here, so the
+                  # exec arm adds its OWN cgroup view (memory.max proves the bound is
+                  # in effect, memory.current the pressure at hang time); the helper arm
+                  # snapshots the sidecar counters alongside. Non-fatal by construction.
+                  capture_oom_attribution "hang-forensics page=${PAGE}" || true
                   echo '--- in-container process list (ps, /proc cmdline fallback) ---'
                   docker exec "$RENDER_CONTAINER" ps -ef 2>/dev/null || docker exec "$RENDER_CONTAINER" sh -c 'for d in /proc/[0-9]*; do printf "%s " "${d#/proc/}"; tr "\0" " " < "$d/cmdline" 2>/dev/null; echo; done' 2>/dev/null || true
                   # v1.3.32: replaced the old 'kernel log tails' probe (/tmp/*kernel*.log,
@@ -945,6 +998,16 @@ jobs:
             # setting it step-wide would change unrelated pipeline semantics).
             pipe_status=${PIPESTATUS[0]}
             if [ "$pipe_status" -ne 0 ]; then
+              # v1.3.38: normal death path — attribute BEFORE teardown. This runs
+              # ahead of the EXIT trap's rm arm, so docker inspect still has a
+              # chance against the --rm auto-delete race, and the sidecar-cgroup
+              # helper works regardless (those counters live in the cgroup
+              # hierarchy, not the container). A 137 here with local
+              # memory.events untouched but subtree-aggregated max/oom moved is
+              # the docker-enforced verdict; local counters moved means the
+              # sidecar's own 3Gi cap fired (cluster-side ceiling, not the
+              # render). Non-fatal by construction: never masks pipe_status.
+              capture_oom_attribution "docker-run rc=$pipe_status" || true
               exit "$pipe_status"
             fi
           done

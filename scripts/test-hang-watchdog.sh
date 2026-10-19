@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # test-hang-watchdog.sh — behavioural harness for the v1.3.37 hang-watchdog
-# liveness corroborator inside .github/workflows/render-quarto.yml.
+# liveness corroborator and the v1.3.38 OOM self-attribution unit inside
+# .github/workflows/render-quarto.yml.
 #
 # WHAT IT DOES
 #   Extracts the sidecar block verbatim between the
@@ -21,6 +22,26 @@
 #   emitted markers (::warning::LIVE-KERNEL-CORROBORATED etc.) and on how many
 #   times `docker kill` was invoked — NOT on the byte content of hang-report.txt.
 #
+# v1.3.38 UNITS UNDER TEST (case i)
+#   The render step grew one sentinel-delimited unit exercised independently
+#   (the RENDER-MEMORY unit and its cases g/h were DROPPED at rebase onto
+#   develop 2026-10-20: the memory bound ships as render-memory-limit (#42,
+#   released in v1.3.39); keeping #37's parallel -m/--memory-swap input would
+#   have put two order-dependent --memory flags on one `docker run`):
+#     # >>> OOM-CAPTURE-BEGIN / # <<< OOM-CAPTURE-END
+#       the capture_oom_attribution helper (case i: under `set -e` with a docker
+#       stub failing inspect, exec AND run, the function must still return 0 and
+#       every fallback echo must fire — non-fatality by construction).
+#   The WATCHDOG unit's forensics block now CALLS capture_oom_attribution, so
+#   the sourced BLOCK prepends the extracted OOM-CAPTURE definition to the
+#   watchdog unit — otherwise (b)/(c) would exercise the call through bash's
+#   "command not found" + `|| true` and still print green. The [pre] non-empty
+#   assertions on both extractions close that silent-degradation hole: a renamed
+#   sentinel FAILS the run instead of hollowing it.
+#   SENTINEL ANCHORING: workflow YAML comments/descriptions contain bare
+#   sentinel-name strings; the extractions therefore anchor on the full
+#   "# >>>" / "# <<<" comment form, never the bare name.
+#
 # KNOWN LIMITATIONS (stated, not faked — see PR body too)
 #   1. This harness asserts the delta LOGIC via the seams; it deliberately does
 #      NOT assert hang-report.txt bytes. On a macOS dev host `date -Is` fails
@@ -37,6 +58,16 @@
 #      `exit "$pipe_status"` branch is intact"; it does not simulate the 137.
 #   3. MUST run under bash (the block uses `read -a`, arrays, herestrings). zsh's
 #      `read -a` differs and will report a false LIVE=0. Invoke with `bash`.
+#   4. Case (i) cannot exercise the helper container's central
+#      assumption — that a container started BY the sidecar's dockerd lands in a
+#      cgroup whose PARENT is the sidecar's, so `dirname` of the helper's own
+#      cgroup path IS the sidecar directory under --cgroupns=host — nor the
+#      cgroup-v1 fallback. Those run
+#      only inside a live dockerd on the org pool and stay RUNTIME-UNPROVEN
+#      until the first real death there produces an oom-attribution block in a
+#      retained job log. Case (i) proves the arms are non-fatal against a
+#      FAILING docker; it does not prove the output is correct against a
+#      WORKING one.
 #
 # Exit status: 0 = every case passed, 1 = at least one failure.
 
@@ -138,13 +169,31 @@ docker() {
 # ---------------------------------------------------------------------------
 # Extract + substitute the sidecar block once, then verify it still parses.
 # ---------------------------------------------------------------------------
-BLOCK="$TMP/block.sh"
+WD_ONLY="$TMP/watchdog-only.sh"
 awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
   index($0,b){f=1;next} index($0,e){f=0} f
 ' "$WORKFLOW" \
 | sed -e 's/${{ inputs.hang-detection-minutes }}/$CASE_HANG_MIN/g' \
       -e 's/${{ inputs.hang-action }}/$CASE_HANG_MODE/g' \
-      -e 's/${{ inputs.hang-max-extensions }}/$CASE_HANG_EXT/g' > "$BLOCK"
+      -e 's/${{ inputs.hang-max-extensions }}/$CASE_HANG_EXT/g' > "$WD_ONLY"
+
+# ---------------------------------------------------------------------------
+# v1.3.38 unit. ANCHOR ON THE FULL "# >>>"/"# <<<" COMMENT FORM (the same
+# posture the removed RENDER-MEMORY extraction used): a bare-name match can
+# hit incidental mentions in YAML comments/descriptions and extract the
+# header instead of the block.
+# ---------------------------------------------------------------------------
+OOMB_MARK='>>> OOM-CAPTURE-BEGIN'
+OOME_MARK='<<< OOM-CAPTURE-END'
+OOM_BLOCK="$TMP/oom-capture.sh"
+awk -v b="$OOMB_MARK" -v e="$OOME_MARK" 'index($0,b){f=1;next} index($0,e){f=0} f' "$WORKFLOW" > "$OOM_BLOCK"
+
+# The watchdog forensics calls capture_oom_attribution; prepend the extracted
+# helper so sourcing BLOCK is self-contained. Without this the call degrades to
+# "command not found" rescued by `|| true` and (b)/(c) stay green while testing
+# less than they claim.
+BLOCK="$TMP/block.sh"
+cat "$OOM_BLOCK" "$WD_ONLY" > "$BLOCK"
 
 # ---------------------------------------------------------------------------
 # run_case NAME
@@ -195,10 +244,31 @@ if [ ! -s "$BLOCK" ]; then bad "sentinel extraction produced an empty block"; el
 if grep -q '\${{' "$BLOCK"; then bad "leftover \${{ ... }} token in extracted block"; else ok "all \${{ inputs.* }} tokens substituted"; fi
 if bash -n "$BLOCK" 2>"$TMP/parse.err"; then ok "bash -n clean on extracted block"; else bad "bash -n: $(cat "$TMP/parse.err")"; fi
 # the disabled-guard must be INSIDE the extracted unit (END sentinel after fi)
+# shellcheck disable=SC2016
 if grep -qF 'if [ -n "$HANG_MIN" ] && [ "$HANG_MIN" != "0" ]; then' "$BLOCK"; then
   ok "disabled-guard present in extracted unit (case d is meaningful)"
 else
   bad "disabled-guard NOT inside sentinels — case (d) cannot exercise it"
+fi
+# v1.3.38: the attribution unit must extract NON-EMPTY and structurally intact.
+# A silent sentinel rename would otherwise hollow (b)/(c) (call falls through
+# to `|| true`) and vacuate (i) while the run still printed green.
+# (The v1.3.38 RENDER-MEMORY unit and its cases g/h were dropped at rebase:
+#  the bound is provided by render-memory-limit on develop — superseded.)
+if [ -s "$OOM_BLOCK" ] && grep -qF 'capture_oom_attribution() {' "$OOM_BLOCK"; then
+  ok "OOM-CAPTURE extraction non-empty and defines capture_oom_attribution ($(wc -l < "$OOM_BLOCK" | tr -d ' ') lines)"
+else
+  bad "OOM-CAPTURE extraction empty or lacks the function — (b)/(c) would silently degrade and (i) is vacuous"
+fi
+if grep -qF 'capture_oom_attribution() {' "$BLOCK"; then
+  ok "OOM-CAPTURE helper prepended to the sourced watchdog BLOCK (forensics call resolves to real code)"
+else
+  bad "helper NOT prepended — (b)/(c) exercise 'command not found', not the attribution path"
+fi
+if grep -qF 'capture_oom_attribution "hang-forensics' "$BLOCK"; then
+  ok "watchdog BLOCK contains the v1.3.38 attribution call site"
+else
+  bad "attribution call site vanished from the watchdog block"
 fi
 echo
 
@@ -247,6 +317,7 @@ else
 fi
 note "sample: $(grep -m1 'HANG-DETECTED after' "$OUT")"
 # the format string in the source block is byte-identical to the v1.3.36 contract
+# shellcheck disable=SC2016
 if grep -qF 'echo "::error::HANG-DETECTED after ${SILENT_MIN} min inactivity at page ${PAGE}"' "$BLOCK"; then
   ok "HANG-DETECTED format string untouched in source"
 else
@@ -254,6 +325,7 @@ else
 fi
 [ "$KILLS" != "0" ] && ok "docker kill invoked (${KILLS}x) on the no-kernel path" || bad "docker kill NOT invoked on no-kernel hang"
 # the PIPESTATUS decider stays the sole step-status gate (not simulated: see header)
+# shellcheck disable=SC2016
 if grep -qF 'exit "$pipe_status"' "$WORKFLOW"; then
   ok "exit \"\$pipe_status\" branch intact in workflow (137 path un-simulated by design)"
 else
@@ -355,6 +427,70 @@ if grep -qF "if: inputs.site-transport != 'staging'" "$WORKFLOW"; then
 else
   bad "site-zip staging gate disappeared — scope violation"
 fi
+echo
+
+# ---------------------------------------------------------------------------
+# (g)/(h) — DROPPED at rebase onto develop (2026-10-20). They exercised the
+# RENDER-MEMORY unit (render-memory input, -m/--memory-swap 2800m), which is
+# SUPERSEDED by develop's render-memory-limit (#42, v1.3.39): two --memory
+# flags on one `docker run` would fight order-dependently, and the 2800m
+# default was sized for the old 3Gi sidecar (now 6Gi). Case letters are NOT
+# renumbered: (i) keeps its label, matching the OOM-CAPTURE sentinel comment
+# in render-quarto.yml ("case i — do not reflow the sentinels").
+# ---------------------------------------------------------------------------
+echo
+
+# ---------------------------------------------------------------------------
+# (i) capture_oom_attribution non-fatality: under `set -e`, with a docker stub
+#     failing ALL THREE arms (inspect, exec, run — the helper-container `run`
+#     arm is the one most likely to leak a real invocation), the function must
+#     return 0, every fallback echo must fire, and every arm must have been
+#     attempted (stub log). NOTE: this proves resilience, NOT correctness of
+#     the cgroup reading — see header limitation 4.
+# ---------------------------------------------------------------------------
+echo "[case i] capture_oom_attribution under set -e, docker inspect/exec/run all rc=1  =>  returns 0, fallbacks fire"
+ILOG="$TMP/i-docker-subs.log"; : > "$ILOG"
+IOUT=$(
+  (
+    set -e
+    RENDER_CONTAINER="fake-render-c"
+    # shellcheck disable=SC2034  # consumed by the sourced OOM-CAPTURE block
+    QUARTO_IMAGE="fake-image"
+    # shellcheck disable=SC2329  # invoked indirectly via the sourced OOM-CAPTURE block
+    docker() {
+      printf '%s\n' "$1" >> "$ILOG"
+      return 1
+    }
+    source "$OOM_BLOCK"
+    capture_oom_attribution "unit-i-death"
+    printf 'SUBSHELL-SURVIVED rc=%s\n' "$?"
+  ) 2>&1
+)
+irc=$?
+if [ "$irc" = "0" ]; then
+  ok "set -e subshell exited 0 — no attribution arm aborted the shell"
+else
+  bad "set -e aborted the capture subshell (rc=$irc)"
+fi
+if printf '%s' "$IOUT" | grep -qF 'SUBSHELL-SURVIVED rc=0'; then
+  ok "capture_oom_attribution returned 0 by construction (explicit 'return 0' reached)"
+else
+  bad "function did not return 0 (or died mid-capture); output tail: $(printf '%s' "$IOUT" | tail -2)"
+fi
+for want in 'docker inspect failed' 'self-cgroup not readable' 'sidecar-cgroup helper failed'; do
+  if printf '%s' "$IOUT" | grep -qF -- "$want"; then
+    ok "fallback echo fired: '$want'"
+  else
+    bad "fallback echo MISSING: '$want' — an arm is fatal or was skipped"
+  fi
+done
+for sub in inspect exec run; do
+  if grep -qx -- "$sub" "$ILOG"; then
+    ok "docker stub saw the '$sub' arm (intercepted — no real invocation could leak)"
+  else
+    bad "docker stub never saw '$sub' — that arm bypassed the stub"
+  fi
+done
 echo
 
 # ---------------------------------------------------------------------------
