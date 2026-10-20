@@ -79,6 +79,17 @@ on:
         type: boolean
         default: true
 
+    # workflow_call exposes job outputs to EXTERNAL callers ONLY through this
+    # top-level map — without it, needs.<job>.outputs.staging-* resolved to ''
+    # for every caller (canary blocker, runs 39450936515/39450984899:
+    # "staging-dir malformed …: ''"). Purely additive: artifact-transport
+    # consumers read none of these; values mirror the render job outputs.
+    outputs:
+      staging-dir: ${{ jobs.render.outputs.staging-dir }}
+      staging-zip: ${{ jobs.render.outputs.staging-zip }}
+      staging-sha256: ${{ jobs.render.outputs.staging-sha256 }}
+      staging-ready: ${{ jobs.render.outputs.staging-ready }}
+
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
   cancel-in-progress: true
