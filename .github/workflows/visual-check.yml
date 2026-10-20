@@ -23,10 +23,12 @@ name: Visual check (reusable)
 #   | report-retention-days | number  | 7         | retention of the visual-check-report artifact |
 #   | report-upload         | boolean | true      | false = skip the report artifact upload (gate still evaluates) |
 #
-# `site-source: staging` (and any run where `auto` may fall back) requires
-# `secrets: inherit` on the calling job — the org secret TEACHING_DEPLOY_SSH_KEY
-# reads this run's dir under the deploy user's home on vai. Without it the
-# "Write staging key" step fails loudly (never silently skips).
+# `site-source: staging` (and any run where `auto` may fall back) needs the org
+# secret TEACHING_DEPLOY_SSH_KEY to reach the visual-check job — the scoped
+# mapping below is the recommended form (`secrets: inherit` also works but
+# additionally exposes EBPRO_CI_PAT et al. to a job that clones and `npm ci`s
+# external tool code). Without the key the "Write staging key" step fails
+# loudly (never silently skips).
 # PR events never push to staging (render-quarto gates event_name == 'push'),
 # so staging callers must gate the job itself — see snippet B.
 #
@@ -41,11 +43,17 @@ name: Visual check (reusable)
 #       with:
 #         site-transport: staging
 #         staging-retention: defer
+#         # callee default FALSE — omitting = green-but-UNPUBLISHED site (2026-10-20 fleet incident class)
+#         deploy-static: ${{ github.event_name != 'pull_request' }}
 #     visual-check:
 #       needs: render
 #       if: github.event_name == 'push'
 #       uses: ebpro/_quarto-utils/.github/workflows/visual-check.yml@<ref>
-#       secrets: inherit
+#       # least privilege: this job consumes ONLY TEACHING_DEPLOY_SSH_KEY;
+#       # `secrets: inherit` works too but exposes EBPRO_CI_PAT etc. to a job
+#       # that clones + `npm ci`s external tool code (tooling-visual-qa)
+#       secrets:
+#         TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
 #       with:
 #         site-source: staging
 #         staging-dir: ${{ needs.render.outputs.staging-dir }}
@@ -61,15 +69,26 @@ name: Visual check (reusable)
 #       uses: ebpro/_quarto-utils/.github/workflows/visual-check.yml@<ref>
 #       with: { gate: error }
 #
-# Migration-mode caller (works across artifact/both/staging transports; PR runs
-# stay covered as long as the artifact exists, staging fallback serves pushes):
+# Migration-mode caller (works across artifact/both/staging transports; covers
+# PR runs ONLY for artifact-mode transports — a staging-transport consumer has
+# NEITHER artifact NOR staging push on PR events: gate the job with
+# if: github.event_name == 'push', or expect the "Resolve staging fallback
+# (auto)" step to fail loudly with exactly that advice):
 #
 #   # C — auto + error-strict
 #   jobs:
+#     render:
+#       uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@<ref>
+#       secrets: inherit
+#       with:
+#         # callee default FALSE — omitting = green-but-UNPUBLISHED site (2026-10-20 fleet incident class)
+#         deploy-static: ${{ github.event_name != 'pull_request' }}
 #     visual-check:
 #       needs: render
 #       uses: ebpro/_quarto-utils/.github/workflows/visual-check.yml@<ref>
-#       secrets: inherit
+#       # least privilege — scoped mapping, see snippet B's comment
+#       secrets:
+#         TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
 #       with:
 #         site-source: auto
 #         staging-dir: ${{ needs.render.outputs.staging-dir }}
@@ -339,6 +358,15 @@ jobs:
           EXPECTED_RUN="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           if [ "$REPO_SEG" != "$EXPECTED_REPO" ] || [ "$RUN_DIR" != "$EXPECTED_RUN" ]; then
             echo "::error::staging-dir does not belong to this run — expected ${EXPECTED_REPO}/${EXPECTED_RUN}, got ${REPO_SEG}/${RUN_DIR} (poison-class: no fallback)"
+            exit 1
+          fi
+          # Race/poison split: an ABSENT run-dir (render push-gated? reclaimed
+          # by a later run's deferred sweep?) must not read as an integrity
+          # failure — the poison-class wording below is reserved for a genuine
+          # digest mismatch after a successful pull. Remote path is home-
+          # relative, identical to the rsync/scp targets below.
+          if ! ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "test -d '$STAGING_DIR'"; then
+            echo "::error::staging dir missing on vai: ${STAGING_DIR} — render push-gated? deferred-sweep race? re-run this job (transport class, NOT poison)"
             exit 1
           fi
           LOCAL_ZIP="$GITHUB_WORKSPACE/site-zip/site-zip.zip"

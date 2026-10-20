@@ -329,11 +329,25 @@ historique inchangé) :
   plus d'artefact) ;
 - `staging` : récupération SSH du répertoire de staging de CETTE exécution
   sur vai (`needs.render.outputs.staging-dir` + digest attesté
-  `staging-sha256`) — nécessite `secrets: inherit` côté appelant et
-  `staging-retention: defer` côté render (sinon `deploy-static` supprime le
-  répertoire avant la lecture) ; les PR ne poussent jamais en staging :
-  gated par `if: github.event_name == 'push'` ;
+  `staging-sha256`) — nécessite le secret `TEACHING_DEPLOY_SSH_KEY` côté
+  appelant (mappage `secrets:` scoped recommandé, cf. snippets ; `secrets:
+  inherit` fonctionne aussi mais expose `EBPRO_CI_PAT` etc. à un job qui
+  clone et `npm ci` du code d'outil externe) et `staging-retention: defer`
+  côté render (sinon `deploy-static` supprime le répertoire avant la
+  lecture) ; les PR ne poussent jamais en staging : gated par
+  `if: github.event_name == 'push'` ;
 - `auto` : artefact d'abord, repli staging ensuite — mode de migration.
+  Couvre les runs PR **uniquement pour les transports artifact** : un
+  consommateur `site-transport: staging` n'a NI artefact NI push staging
+  sur PR — gater le job par `if: github.event_name == 'push'` ou s'attendre
+  à l'erreur explicite de l'étape « Resolve staging fallback (auto) ».
+
+⚠️ Tout wrapper appelant `render-quarto.yml` doit passer explicitement
+`deploy-static: ${{ github.event_name != 'pull_request' }}` dans le `with:`
+du render job : l'input callee a un défaut **FALSE** — l'omettre donne un
+render vert mais un site jamais publié (classe d'incident fleet 2026-10-20 :
+`notebook-java-asynchronous`). Les snippets B et C de l'en-tête de
+`.github/workflows/visual-check.yml` l'incluent.
 
 Les trois cadrans additionnels : `gate` (`advisory` | `error` |
 `error-strict`), `report-upload` / `report-retention-days`, et
