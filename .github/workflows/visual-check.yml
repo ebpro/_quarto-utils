@@ -124,7 +124,7 @@ on:
         type: string
         default: ''
       site-source:
-        description: 'Site payload transport: artifact = same-run site-zip download [today''s behavior, default]; staging = pull THIS run''s dir from vai teaching-staging via digest-attested SSH (requires secrets: inherit + render-side staging-retention: defer); auto = try artifact, fall back to staging'
+        description: 'Site payload transport: artifact = same-run site-zip download [today''s behavior, default]; staging = pull THIS run''s dir from vai teaching-staging via digest-attested SSH (requires TEACHING_DEPLOY_SSH_KEY exposed to this call — scoped mapping TEACHING_DEPLOY_SSH_KEY (declared) or secrets: inherit — + render-side staging-retention: defer); auto = try artifact, fall back to staging'
         required: false
         type: string
         default: 'artifact'
@@ -302,7 +302,7 @@ jobs:
           TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
         run: |
           if [ -z "$TEACHING_DEPLOY_SSH_KEY" ]; then
-            echo "::error::Le secret TEACHING_DEPLOY_SSH_KEY n'est pas défini ou n'est pas visible par ce dépôt ; staging pull impossible (le job appelant doit passer secrets: inherit)"
+            echo "::error::Le secret TEACHING_DEPLOY_SSH_KEY n'est pas défini ou n'est pas visible par ce dépôt ; staging pull impossible (le job appelant doit exposer TEACHING_DEPLOY_SSH_KEY via un mapping scopé (déclaré) ou secrets: inherit)"
             exit 1
           fi
           KEY="$(mktemp /tmp/vqa-staging-key.XXXXXX)"
