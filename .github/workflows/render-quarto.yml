@@ -1805,7 +1805,7 @@ jobs:
 
       - name: Download site artifact
         if: github.event_name == 'push' && (inputs.site-transport == 'artifact' || (inputs.site-transport == 'both' && steps.pull-staging.outputs.pull-failure == 'transport'))
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: site-zip
           path: site-zip
