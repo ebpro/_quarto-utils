@@ -1,14 +1,99 @@
 name: Visual check (reusable)
 
-# M2 visual-QA rollout. Consumes the render job's site-zip artifact from the
-# SAME run as a sibling job (the b1 mechanic): download-artifact resolves by
-# name within the run — no repo/run-id parameters. Usage from a caller:
+# M2 visual-QA rollout — sibling of the render job. The site payload to audit
+# arrives through one of three transports (input `site-source`). The staging
+# transport exists because the fleet default moved to `site-transport: staging`
+# (render-quarto.yml): the same-run `site-zip` artifact is then never uploaded,
+# so the historical b1 download mechanic fails structurally (evidence: notebook-ci
+# run 39207256381 @ 3fc3b72, visual-check red at "Download site artifact").
 #
+# Inputs (workflow_call — all optional; defaults reproduce the pre-staging behavior):
+#
+#   | name                  | type    | default   | one line |
+#   |---|---|---|---|
+#   | site-artifact         | string  | site-zip  | artifact name carrying site-zip.zip for the same run (artifact/auto modes) |
+#   | tool-ref              | string  | v0.1.4    | ebpro/tooling-visual-qa ref to run (tag recommended; v0.1.2+ needed for an in-container browser) |
+#   | gate                  | string  | advisory  | advisory = always exit 0 (counts reported); error = fail on any severity=error row; error-strict = warning-class rows ALSO fail the gate |
+#   | quarto-image          | string  | solen build | container providing node + chrome-headless-shell |
+#   | filter                | string  | ''        | regex passed through to the tool page filter (empty = every page) |
+#   | site-source           | string  | artifact  | artifact = same-run site-zip download [today's behavior]; staging = pull THIS run's dir from vai teaching-staging via digest-attested SSH; auto = try artifact, fall back to staging |
+#   | staging-dir           | string  | ''        | render-job output passthrough: needs.render.outputs.staging-dir (staging/auto modes) |
+#   | staging-sha256        | string  | ''        | render-job output passthrough: the attested needs.render.outputs.staging-sha256 |
+#   | timeout-minutes       | number  | 30        | job-level timeout (inputs context is allowed in jobs.<job_id>.timeout-minutes per current docs; default = the historical literal 30) |
+#   | report-retention-days | number  | 7         | retention of the visual-check-report artifact |
+#   | report-upload         | boolean | true      | false = skip the report artifact upload (gate still evaluates) |
+#
+# `site-source: staging` (and any run where `auto` may fall back) needs the org
+# secret TEACHING_DEPLOY_SSH_KEY to reach the visual-check job — the scoped
+# mapping below is the recommended form (`secrets: inherit` also works but
+# additionally exposes EBPRO_CI_PAT et al. to a job that clones and `npm ci`s
+# external tool code). Without the key the "Write staging key" step fails
+# loudly (never silently skips).
+# PR events never push to staging (render-quarto gates event_name == 'push'),
+# so staging callers must gate the job itself — see snippet B.
+#
+# A staging-mode caller (render-quarto must run with `staging-retention: defer`
+# so deploy-static's housekeeping does not rm the run-dir while this job pulls it):
+#
+#   # B — staging mode (+ PR skip)
+#   jobs:
+#     render:
+#       uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@<ref>
+#       secrets: inherit
+#       with:
+#         site-transport: staging
+#         staging-retention: defer
+#         # callee default FALSE — omitting = green-but-UNPUBLISHED site (2026-10-20 fleet incident class)
+#         deploy-static: ${{ github.event_name != 'pull_request' }}
+#     visual-check:
+#       needs: render
+#       if: github.event_name == 'push'
+#       uses: ebpro/_quarto-utils/.github/workflows/visual-check.yml@<ref>
+#       # least privilege: this job consumes ONLY TEACHING_DEPLOY_SSH_KEY;
+#       # `secrets: inherit` works too but exposes EBPRO_CI_PAT etc. to a job
+#       # that clones + `npm ci`s external tool code (tooling-visual-qa)
+#       secrets:
+#         TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+#       with:
+#         site-source: staging
+#         staging-dir: ${{ needs.render.outputs.staging-dir }}
+#         staging-sha256: ${{ needs.render.outputs.staging-sha256 }}
+#         gate: error
+#
+# Artifact-mode caller (byte-identical behavior to pre-staging — no new wiring):
+#
+#   # A — artifact legacy (default site-source: artifact)
 #   jobs:
 #     visual-check:
 #       needs: render            # the reusable render-quarto.yml job id
 #       uses: ebpro/_quarto-utils/.github/workflows/visual-check.yml@<ref>
-#       with: { gate: advisory }
+#       with: { gate: error }
+#
+# Migration-mode caller (works across artifact/both/staging transports; covers
+# PR runs ONLY for artifact-mode transports — a staging-transport consumer has
+# NEITHER artifact NOR staging push on PR events: gate the job with
+# if: github.event_name == 'push', or expect the "Resolve staging fallback
+# (auto)" step to fail loudly with exactly that advice):
+#
+#   # C — auto + error-strict
+#   jobs:
+#     render:
+#       uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@<ref>
+#       secrets: inherit
+#       with:
+#         # callee default FALSE — omitting = green-but-UNPUBLISHED site (2026-10-20 fleet incident class)
+#         deploy-static: ${{ github.event_name != 'pull_request' }}
+#     visual-check:
+#       needs: render
+#       uses: ebpro/_quarto-utils/.github/workflows/visual-check.yml@<ref>
+#       # least privilege — scoped mapping, see snippet B's comment
+#       secrets:
+#         TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+#       with:
+#         site-source: auto
+#         staging-dir: ${{ needs.render.outputs.staging-dir }}
+#         staging-sha256: ${{ needs.render.outputs.staging-sha256 }}
+#         gate: error-strict
 
 on:
   workflow_call:
@@ -24,7 +109,7 @@ on:
         type: string
         default: 'v0.1.4'
       gate:
-        description: 'advisory = always exit 0 (counts reported); error = fail the job when any severity=error violation row exists'
+        description: 'advisory = always exit 0 (counts reported); error = fail the job when any severity=error violation row exists; error-strict = warning-class rows ALSO fail the gate'
         required: false
         type: string
         default: 'advisory'
@@ -38,6 +123,40 @@ on:
         required: false
         type: string
         default: ''
+      site-source:
+        description: 'Site payload transport: artifact = same-run site-zip download [today''s behavior, default]; staging = pull THIS run''s dir from vai teaching-staging via digest-attested SSH (requires TEACHING_DEPLOY_SSH_KEY exposed to this call — scoped mapping TEACHING_DEPLOY_SSH_KEY (declared) or secrets: inherit — + render-side staging-retention: defer); auto = try artifact, fall back to staging'
+        required: false
+        type: string
+        default: 'artifact'
+      staging-dir:
+        description: 'Pass needs.render.outputs.staging-dir (validated teaching-staging/<repo>/<run>-<attempt>; consumed in staging/auto modes)'
+        required: false
+        type: string
+        default: ''
+      staging-sha256:
+        description: 'Pass needs.render.outputs.staging-sha256 (render-attested 64-hex digest of the staged site.zip; consumed in staging/auto modes)'
+        required: false
+        type: string
+        default: ''
+      timeout-minutes:
+        description: 'Job timeout (minutes). Default 30 = the historical literal; raise for very large sites on slow lanes.'
+        required: false
+        type: number
+        default: 30
+      report-retention-days:
+        description: 'Retention of the visual-check-report artifact (days).'
+        required: false
+        type: number
+        default: 7
+      report-upload:
+        description: 'Upload the visual-check-report artifact (false = skip; the gate step still evaluates).'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      TEACHING_DEPLOY_SSH_KEY:
+        required: false
+        description: "SSH private key for the staging site pull (vai.univ-tln.fr); consumed ONLY when site-source is staging/auto-with-staging"
 
 defaults:
   run:
@@ -52,14 +171,246 @@ concurrency:
 
 jobs:
   visual-check:
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     runs-on: [self-hosted, linux, ebpro-org, x64]
     steps:
+      - name: Resolve site source
+        id: source
+        # Mode gate + fail-fast input validation for explicit staging mode.
+        # site-source is a STRING with in-step validation (type: choice is not
+        # a valid workflow_call type — same doctrine as render-quarto's
+        # site-transport guard).
+        env:
+          SITE_SOURCE: ${{ inputs.site-source }}
+          EVENT: ${{ github.event_name }}
+          STAGING_DIR: ${{ inputs.staging-dir }}
+          STAGING_SHA256: ${{ inputs.staging-sha256 }}
+        run: |
+          set -uo pipefail
+          case "$SITE_SOURCE" in
+            artifact|staging|auto) ;;
+            *)
+              echo "::error::Invalid site-source '$SITE_SOURCE' — expected one of: artifact | staging | auto (no fallback)"
+              exit 1
+              ;;
+          esac
+          if [ "$SITE_SOURCE" = "staging" ] && [ "$EVENT" = "pull_request" ]; then
+            echo "::error::PR events have no staging push (render-quarto gates event_name == 'push') — skip this job via if: github.event_name == 'push' in the caller wrapper"
+            exit 1
+          fi
+          if [ "$SITE_SOURCE" = "staging" ]; then
+            # Fail fast NOW on malformed handoff inputs (the pull step re-validates
+            # everything receiver-side — this only moves the error earlier).
+            require_staging_dir() {
+              local d="$1" rest seg
+              if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+                echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+                return 1
+              fi
+              rest="${d#teaching-staging/}"
+              for seg in "${rest%%/*}" "${rest#*/}"; do
+                if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                   && [[ "$seg" != "." && "$seg" != ".." ]] \
+                   && [[ "$seg" != .* && "$seg" != -* ]]; then
+                  continue
+                fi
+                echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+                return 1
+              done
+            }
+            require_staging_dir "$STAGING_DIR" || exit 1
+            REST="${STAGING_DIR#teaching-staging/}"
+            RUN_DIR="${REST#*/}"
+            if [[ ! "$RUN_DIR" =~ ^[0-9]+-[0-9]+$ ]]; then
+              echo "::error::staging run-dir '$RUN_DIR' is not <run-id>-<attempt> (^[0-9]+-[0-9]+\$) — refusing"
+              exit 1
+            fi
+            if [[ ! "$STAGING_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::staging-sha256 missing or malformed (expected ^[0-9a-f]{64}\$): '$STAGING_SHA256'"
+              exit 1
+            fi
+          fi
+          echo "mode=$SITE_SOURCE" >> "$GITHUB_OUTPUT"
+
       - name: Download site artifact (same run — b1 mechanic)
+        # Skipped entirely in staging mode; OPTIONAL in auto mode
+        # (continue-on-error) so a missing artifact hands over to the staging
+        # pull instead of killing the job. In artifact mode (default) this step
+        # is byte-identical to its pre-staging form: unconditional, fatal.
+        if: inputs.site-source != 'staging'
+        continue-on-error: ${{ inputs.site-source == 'auto' }}
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.site-artifact }}
           path: site-zip
+
+      - name: Resolve staging fallback (auto)
+        id: fallback
+        # Auto-mode pivot: the download above either delivered site-zip.zip or
+        # (quota-red / transport=staging / purge-before-read) did not. Absent
+        # payload => the staging pull must be fully wired: validate the same
+        # handoff inputs the explicit staging mode demands.
+        if: inputs.site-source == 'auto'
+        env:
+          STAGING_DIR: ${{ inputs.staging-dir }}
+          STAGING_SHA256: ${{ inputs.staging-sha256 }}
+        run: |
+          set -uo pipefail
+          if [ -f "$GITHUB_WORKSPACE/site-zip/site-zip.zip" ]; then
+            echo "needs-staging=false" >> "$GITHUB_OUTPUT"
+            echo "✅ auto: same-run artifact present — staging pull not needed"
+            exit 0
+          fi
+          echo "::notice::auto: no site-zip artifact in this run (site-transport=staging, or the upload/purge lifecycle removed it) — falling back to the staging pull"
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed or empty (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d' — on PR runs with site-transport=staging there is no artifact AND no staging push: gate this job with if: github.event_name == 'push' in the caller wrapper, or use site-source: artifact"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR" || exit 1
+          REST="${STAGING_DIR#teaching-staging/}"
+          RUN_DIR="${REST#*/}"
+          if [[ ! "$RUN_DIR" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "::error::staging run-dir '$RUN_DIR' is not <run-id>-<attempt> (^[0-9]+-[0-9]+\$) — refusing"
+            exit 1
+          fi
+          if [[ ! "$STAGING_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::staging-sha256 missing or malformed (expected ^[0-9a-f]{64}\$): '$STAGING_SHA256'"
+            exit 1
+          fi
+          echo "needs-staging=true" >> "$GITHUB_OUTPUT"
+
+      - name: Write staging key
+        id: staging-key
+        # Same mktemp+printf+chmod600 pattern as render-quarto's key steps
+        # (secret only via env, never echoed); KEY lands in GITHUB_ENV exactly
+        # like the deploy-side "Write SSH key" so rsync -e can use it unquoted.
+        if: steps.source.outputs.mode == 'staging' || steps.fallback.outputs.needs-staging == 'true'
+        env:
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$TEACHING_DEPLOY_SSH_KEY" ]; then
+            echo "::error::Le secret TEACHING_DEPLOY_SSH_KEY n'est pas défini ou n'est pas visible par ce dépôt ; staging pull impossible (le job appelant doit exposer TEACHING_DEPLOY_SSH_KEY via un mapping scopé (déclaré) ou secrets: inherit)"
+            exit 1
+          fi
+          KEY="$(mktemp /tmp/vqa-staging-key.XXXXXX)"
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          echo "KEY=$KEY" >> "$GITHUB_ENV"
+
+      - name: Pull staged site
+        id: pull-staging
+        # Receiver core for the staging transport — guard discipline copied from
+        # render-quarto deploy-static "Pull staged site": full per-segment
+        # re-validation (never trust the caller passthrough), run-dir shape,
+        # 64-hex digest, rsync primary / scp fallback ON TOOL ABSENCE ONLY,
+        # destination $GITHUB_WORKSPACE/site-zip/site-zip.zip so "Unpack site"
+        # stays byte-unchanged across modes, POST-PULL local digest check
+        # (mismatch = poison-class exit 1, NO fallback), and the same constants:
+        # StrictHostKeyChecking=accept-new + bruno@vai.univ-tln.fr.
+        # Same-run binding: the dir must belong to THIS repo/run/attempt — the
+        # wrapper passthrough wires needs.render.outputs.*, but a hand-typed or
+        # stale value must never pull somebody else's staging payload.
+        if: steps.source.outputs.mode == 'staging' || steps.fallback.outputs.needs-staging == 'true'
+        env:
+          STAGING_DIR: ${{ inputs.staging-dir }}
+          STAGING_SHA256: ${{ inputs.staging-sha256 }}
+        run: |
+          set -uo pipefail
+          require_staging_dir() {
+            local d="$1" rest seg
+            if [[ ! "$d" =~ ^teaching-staging/[^/]+/[^/]+$ ]]; then
+              echo "::error::staging-dir malformed (expected exactly teaching-staging/<repo>/<run>-<attempt>): '$d'"
+              return 1
+            fi
+            rest="${d#teaching-staging/}"
+            for seg in "${rest%%/*}" "${rest#*/}"; do
+              if [[ "$seg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] \
+                 && [[ "$seg" != "." && "$seg" != ".." ]] \
+                 && [[ "$seg" != .* && "$seg" != -* ]]; then
+                continue
+              fi
+              echo "::error::Invalid staging path segment '$seg' — guard mirror: ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\$, not '.' or '..', no leading '.' or '-'"
+              return 1
+            done
+          }
+          require_staging_dir "$STAGING_DIR" || exit 1
+          REST="${STAGING_DIR#teaching-staging/}"
+          REPO_SEG="${REST%%/*}"
+          RUN_DIR="${REST#*/}"
+          if [[ ! "$RUN_DIR" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "::error::staging run-dir '$RUN_DIR' is not <run-id>-<attempt> (^[0-9]+-[0-9]+\$) — refusing"
+            exit 1
+          fi
+          if [[ ! "$STAGING_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::staging-sha256 missing or malformed (expected ^[0-9a-f]{64}\$): '$STAGING_SHA256'"
+            exit 1
+          fi
+          EXPECTED_REPO="$(basename "$GITHUB_REPOSITORY")"
+          EXPECTED_RUN="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ "$REPO_SEG" != "$EXPECTED_REPO" ] || [ "$RUN_DIR" != "$EXPECTED_RUN" ]; then
+            echo "::error::staging-dir does not belong to this run — expected ${EXPECTED_REPO}/${EXPECTED_RUN}, got ${REPO_SEG}/${RUN_DIR} (poison-class: no fallback)"
+            exit 1
+          fi
+          # Race/poison split: an ABSENT run-dir (render push-gated? reclaimed
+          # by a later run's deferred sweep?) must not read as an integrity
+          # failure — the poison-class wording below is reserved for a genuine
+          # digest mismatch after a successful pull. Remote path is home-
+          # relative, identical to the rsync/scp targets below.
+          if ! ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" "test -d '$STAGING_DIR'"; then
+            echo "::error::staging dir missing on vai: ${STAGING_DIR} — render push-gated? deferred-sweep race? re-run this job (transport class, NOT poison)"
+            exit 1
+          fi
+          LOCAL_ZIP="$GITHUB_WORKSPACE/site-zip/site-zip.zip"
+          mkdir -p "$(dirname "$LOCAL_ZIP")"
+          RC=1
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -az -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "bruno@vai.univ-tln.fr:${STAGING_DIR}/site.zip" "$LOCAL_ZIP" && RC=0
+          else
+            echo "::notice::rsync absent from the runner — scp fallback (same validated remote path)"
+            scp -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr:${STAGING_DIR}/site.zip" "$LOCAL_ZIP" && RC=0
+          fi
+          if [ "$RC" -ne 0 ] || [ ! -s "$LOCAL_ZIP" ]; then
+            rm -f "$LOCAL_ZIP"
+            echo "::error::Staging transport failed (rsync/scp non-zero or empty payload) — remote=${STAGING_DIR}/site.zip"
+            exit 1
+          fi
+          LOCAL_SHA="$(sha256sum "$LOCAL_ZIP" | awk '{print $1}')"
+          if [[ ! "$LOCAL_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Local sha256 unreadable after pull ('$LOCAL_SHA') — cannot attest the staging payload"
+            rm -f "$LOCAL_ZIP"
+            exit 1
+          fi
+          if [ "$LOCAL_SHA" != "$STAGING_SHA256" ]; then
+            echo "::error::digest mismatch — suspicion d'empoisonnement staging ; aucun fallback par conception (local=$LOCAL_SHA expected=$STAGING_SHA256 dir=$STAGING_DIR)"
+            rm -f "$LOCAL_ZIP"
+            exit 1
+          fi
+          echo "✅ staged site pulled and digest-attested: ${STAGING_DIR}/site.zip -> $LOCAL_ZIP"
+
+      - name: Clean up staging key
+        # always() is CRITICAL (runner hygiene doctrine — render-quarto "Clean up
+        # staging key" / "Clean up SSH key"): the private key must be removed from
+        # the persistent self-hosted runner EVEN WHEN the pull step above goes red
+        # (transport/digest failures are precisely the moments the key exists on
+        # disk). No-op in artifact mode (KEY never set).
+        if: always()
+        run: |
+          if [ -n "${KEY:-}" ]; then
+            rm -f "$KEY"
+          fi
 
       - name: Unpack site
         # Same shape as render-quarto deploy-static "Unpack site": the zip
@@ -204,13 +555,13 @@ jobs:
           SUMMARY_EOF
 
       - name: Upload visual-check report
-        if: always()
+        if: always() && inputs.report-upload
         uses: actions/upload-artifact@v4
         with:
           name: visual-check-report
           path: vqa-report
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: ${{ inputs.report-retention-days }}
 
       - name: Gate
         env:
@@ -221,13 +572,22 @@ jobs:
             echo "::error::gate.json missing — the check did not complete; not interpreting as pass"
             exit 1
           fi
-          if [ "$GATE" != "error" ]; then
+          if [ "$GATE" != "error" ] && [ "$GATE" != "error-strict" ]; then
             echo "advisory gate: $(python3 -c "import json;g=json.load(open('vqa-report/gate.json'));print(str(g['errorRows'])+' error-class / '+str(g['totalRows'])+' rows')") — exit 0 by design"
             exit 0
           fi
           ERRORS=$(python3 -c "import json;print(json.load(open('vqa-report/gate.json'))['errorRows'])")
           if [ "$ERRORS" -gt 0 ]; then
-            echo "::error::visual-check gate=error: $ERRORS error-class violation row(s) — see the visual-check-report artifact"
+            echo "::error::visual-check gate=$GATE: $ERRORS error-class violation row(s) — see the visual-check-report artifact"
             exit 1
           fi
-          echo "gate=error: 0 error-class rows — pass"
+          if [ "$GATE" = "error-strict" ]; then
+            WARNINGS=$(python3 -c "import json;print(json.load(open('vqa-report/gate.json')).get('warningRows', 0))")
+            if [ "$WARNINGS" -gt 0 ]; then
+              echo "::error::visual-check gate=error-strict: $WARNINGS warning-class violation row(s) also fail the gate — see the visual-check-report artifact"
+              exit 1
+            fi
+            echo "gate=error-strict: 0 error-class and 0 warning-class rows — pass"
+          else
+            echo "gate=error: 0 error-class rows — pass"
+          fi
