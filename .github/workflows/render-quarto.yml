@@ -58,6 +58,11 @@ on:
         required: false
         type: number
         default: 0
+      render-memory-limit:
+        description: '2026-10-20: --memory cap for the RENDER container (docker run --memory). Bounds it inside the dind sidecar cgroup (6Gi since 2026-10-20) and leaves headroom for dockerd + cell-spawned sibling containers (postgres etc., intentionally unbounded - content-controlled). Pairs with JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=25 set on the same container so the IJava JVM sizes its heap to the container limit instead of reading node RAM: heap exhaustion then surfaces as a LOUD in-JVM OutOfMemoryError before any silent cgroup OOM-kill (exit-137 class). Raise per-wrapper only for proven memory-hungry content; value must be a valid docker --memory size (e.g. 5g).'
+        required: false
+        type: string
+        default: '5g'
       freeze:
         description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. v1.3.27: default switched to FALSE — pins must not silently adopt the freeze machinery; wrappers opt in explicitly with `freeze: true`. Set false (default) to force full cold execution.'
         required: false
@@ -395,6 +400,7 @@ jobs:
           TEACHING_BASE_URL: ${{ secrets.TEACHING_BASE_URL }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           SEO_DIRECTIVES: ${{ inputs.seo-directives }}
+          RENDER_MEMORY_LIMIT: ${{ inputs.render-memory-limit }}
         run: |
           RENDER_CONTAINER="quarto-render-${RUN_ID}"
           # Extra docker-run args. The base env and the 'dind' host mapping are
@@ -413,6 +419,18 @@ jobs:
           # apply even when enable-docker=false, otherwise the JVM gets
           # UnknownHostException: dind.
           DOCKER_ARGS+=(--add-host dind:host-gateway)
+          # 2026-10-20: memory bounding pair for the render container (input
+          # render-memory-limit, default 5g). The dind sidecar cgroup is 6Gi
+          # (since 2026-10-20); an unbounded render container could grow past it
+          # and be killed SILENTLY (exit-137, no JVM diagnostic - the kernel-hang
+          # family signature). --memory caps the container at the limit;
+          # MaxRAMPercentage=25 makes the JVM inside size its heap to the
+          # CONTAINER limit (not node RAM), so the JVM hits its own ceiling and
+          # fails LOUDLY (OutOfMemoryError in the render log) before the cgroup
+          # OOM-killer can act. Cell-spawned siblings (postgres etc.) are NOT
+          # bounded here - they are content-controlled.
+          DOCKER_ARGS+=(--memory="$RENDER_MEMORY_LIMIT")
+          DOCKER_ARGS+=(-e "JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=25")
           if [ "$ENABLE_DOCKER" = "true" ]; then
             # Skip socket mount in DOCKER_ARGS when DOCKER_MOUNTS (auto-detect step) already provides it
             if [ -z "${DOCKER_MOUNTS:-}" ]; then
@@ -1507,6 +1525,126 @@ jobs:
             ${{ github.workspace }}/_freeze
             ${{ github.workspace }}/.quarto
           key: qfreeze-v1-${{ runner.os }}-${{ steps.freeze-key.outputs.digest }}-${{ steps.freeze-key.outputs.qver }}-${{ steps.freeze-key.outputs.snap }}
+
+  publish-console-log:
+    # Mirror the render job's Actions raw console log into the SAME
+    # teaching-ci-debug/<repo>/<run_id>-<run_attempt>/ bundle as
+    # "Publish debug bundle" — completing the forensic trio: quarto-exec.log
+    # (quarto's own log) + hang-forensics/ (watchdog) + job-console.log (the
+    # exact Actions-UI raw log, step-level stdout of the whole render).
+    # WHY A FOLLOW-ON JOB: the REST job-logs endpoint is not downloadable
+    # while the job is still running — proven live on the branch-ref
+    # self-test (run 39298099217: the step placed inside the render job
+    # resolved its numeric id but "log download failed for job 118215790830"
+    # while in flight; the identical URL returned 200 + ~100 KB after the
+    # job completed). Running AFTER render (needs + !cancelled(), so also on
+    # render failure — the forensically interesting case) means the log is
+    # final; a single 20 s retry covers the finalization lag.
+    # WHY NOT github.job: the logs endpoint is numeric-id-only (404s on the
+    # string job key — verified empirically 2026-10-19); the numeric id is
+    # resolved via GET runs/{run}/jobs matching the render job's listing name
+    # ("render", or the reusable-prefixed "render / render" observed live —
+    # segment after the last '/' must equal "render" so sibling entries like
+    # "render / deploy-static" never false-match).
+    # runs-on copies deploy-static's ARC labels EXACTLY (same egress posture
+    # toward vai.univ-tln.fr). No checkout: the step needs no repo files.
+    # Transport copies "Publish debug bundle"'s proven pattern verbatim in
+    # shape (secret via env only, mktemp 600 + EXIT trap, literal host,
+    # accept-new, path-segment validation, remote mkdir, rsync -az --mkpath
+    # WITHOUT --delete / scp fallback on tool absence) — self-contained.
+    # STRICTLY BEST-EFFORT at every level: job continue-on-error + every
+    # failure branch emits ::warning:: and exits 0. Consumers need no
+    # wrapper changes; secrets flow via the existing `secrets: inherit`.
+    needs: [render]
+    if: ${{ !cancelled() }}
+    continue-on-error: true
+    runs-on: [self-hosted, linux, ebpro-org, x64]
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Publish console log
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TEACHING_DEPLOY_SSH_KEY: ${{ secrets.TEACHING_DEPLOY_SSH_KEY }}
+          REPO: ${{ github.event.repository.name }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -uo pipefail
+          HOST="bruno@vai.univ-tln.fr"
+          CONSOLE="$RUNNER_TEMP/job-console.log"
+          if [ -z "${TEACHING_DEPLOY_SSH_KEY:-}" ]; then
+            echo ">> console log: TEACHING_DEPLOY_SSH_KEY not visible for this repo — skipping"
+            exit 0
+          fi
+          # Resolve the render job's NUMERIC Actions id (logs endpoint is
+          # numeric-only; the string key 404s). python3 is runner-proven
+          # ("Package rendered output" uses it on every green render).
+          JOBS_JSON="$RUNNER_TEMP/jobs-list.json"
+          if ! curl -sL -f -H "Authorization: Bearer $GITHUB_TOKEN" \
+               -H "Accept: application/vnd.github+json" \
+               -o "$JOBS_JSON" \
+               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs"; then
+            echo "::warning::console log: jobs-list fetch failed for run $RUN_ID — skipping (render verdict unchanged)"
+            exit 0
+          fi
+          JOB_NUM=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); w=sys.argv[2]; print(next((str(j['id']) for j in d.get('jobs',[]) if j.get('name')==w or str(j.get('name','')).rsplit('/',1)[-1].strip()==w),''))" "$JOBS_JSON" "render" 2>/dev/null || true)
+          if [[ ! "${JOB_NUM:-}" =~ ^[0-9]+$ ]]; then
+            echo "::warning::console log: could not resolve numeric render-job id — skipping"
+            exit 0
+          fi
+          # Download the raw job log: -w http_code (silent -f hides the code);
+          # one 20 s retry absorbs post-completion log finalization lag.
+          fetch_console() {
+            curl -sL -o "$CONSOLE" -w '%{http_code}' \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_NUM/logs" || true
+          }
+          CODE=$(fetch_console)
+          SIZE=0; [ -f "$CONSOLE" ] && SIZE=$(wc -c < "$CONSOLE")
+          if [ "$CODE" != "200" ] || [ "$SIZE" -lt 100 ]; then
+            echo ">> console log: first fetch HTTP=${CODE:-none} size=${SIZE}B — retrying once after 20 s"
+            sleep 20
+            CODE=$(fetch_console)
+            SIZE=0; [ -f "$CONSOLE" ] && SIZE=$(wc -c < "$CONSOLE")
+            if [ "$CODE" != "200" ] || [ "$SIZE" -lt 100 ]; then
+              echo "::warning::console log: download failed after retry (HTTP=${CODE:-none}, ${SIZE}B) — skipping (render verdict unchanged)"
+              exit 0
+            fi
+          fi
+          # Path-segment validation (mirrors "Publish debug bundle"); fail-CLOSED
+          # on the remote path, fail-SOFT on the run.
+          if [[ ! "$REPO" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]] || [[ "$REPO" == "." || "$REPO" == ".." ]]; then
+            echo "::warning::console log: invalid repo path segment '$REPO' — skipping server publish"
+            exit 0
+          fi
+          if [[ ! "$RUN_ID" =~ ^[0-9]+$ ]] || [[ ! "$ATTEMPT" =~ ^[0-9]+$ ]]; then
+            echo "::warning::console log: non-numeric run id/attempt ($RUN_ID-$ATTEMPT) — skipping server publish"
+            exit 0
+          fi
+          DEST="teaching-ci-debug/$REPO/$RUN_ID-$ATTEMPT"
+          KEY="$(mktemp /tmp/teaching-debug-key.XXXXXX)"
+          trap 'rm -f "$KEY"' EXIT
+          printf '%s\n' "$TEACHING_DEPLOY_SSH_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          if ! ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "$HOST" "mkdir -p -- '$DEST'"; then
+            echo "::warning::console log: remote mkdir failed for $DEST — skipping (render verdict unchanged)"
+            exit 0
+          fi
+          RC=1
+          if command -v rsync >/dev/null 2>&1; then
+            # Append-only forensics tree: -az --mkpath, NO --delete (same flag family).
+            rsync -az --mkpath -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" "$CONSOLE" "$HOST:$DEST/job-console.log" && RC=0
+          else
+            echo "::notice::rsync absent — scp fallback (same validated destination)"
+            scp -i "$KEY" -o StrictHostKeyChecking=accept-new "$CONSOLE" "$HOST:$DEST/job-console.log" && RC=0
+          fi
+          if [ "$RC" != 0 ]; then
+            echo "::warning::console log: transfer to $HOST:$DEST/ failed — non-fatal (render verdict unchanged)"
+            exit 0
+          fi
+          echo "✅ console log published: $HOST:~/$DEST/job-console.log ($SIZE bytes)"
 
   deploy-static:
     needs: render
