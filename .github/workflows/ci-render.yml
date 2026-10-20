@@ -1,15 +1,17 @@
-# TEMPLATE for consuming repos (lectures/samples/notebooks).
-# Copy this file to <your-repo>/.github/workflows/ci-render.yml.
+# THROWAWAY canary — verification of PR #44 head code (branch feature/visual-check-staging-source
+# @ 522531b) via the self-pin technique (precedent: verify/42-selfpin @ dedb269, run 39393793988).
+# DO NOT MERGE. Branch checks on a caller pinned to `uses: …@v1.3.38` execute the PINNED body,
+# never the PR head — the only valid head verification is this throwaway self-pinned branch whose
+# `uses:` refs point at this branch's own head render-quarto.yml / visual-check.yml.
 #
-# Deployment model:
-#   push to main     → GitHub Pages (stable)
-#   push to develop  → Cloudflare Pages preview (branch: develop)
-#   push to any other branch → Cloudflare Pages preview (branch: <name>)
-#   PR to any branch → render for CI validation only (no deploy)
-#
-# Requires org secrets (visible to all):
-#   EBPRO_CI_PAT  — fine-grained PAT for cross-repo checkout
-#   CF_API_TOKEN  — Cloudflare API token (Pages:Edit)
+# Evidence runs (see canary report):
+#   1. push to verify/44-selfpin        -> staging transport + defer retention + visual-check
+#                                          staging pull green (advisory gate, transport evidence only)
+#   2. draft PR -> develop (same head)  -> NO if: push-gate on visual-check on purpose: PR event
+#                                          must fail LOUDLY at "Resolve site source" (transport class)
+#   3. poison branch (bogus staging-sha256 literal, dir passthrough kept) -> pull succeeds,
+#                                          digest mismatch = "suspicion d'empoisonnement", exit 1,
+#                                          NO silent artifact fallback.
 
 name: CI Render
 
@@ -23,16 +25,32 @@ on:
 
 jobs:
   render:
-    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.3.38
+    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@verify/44-selfpin
     secrets: inherit
     with:
       utils-ref: v1.3.38
-      # Staging transport: the site-zip artifact upload leaves the push+PR path
-      # entirely (quota-immune) and deploy-static pulls from teaching-staging on
-      # the server — the self-test finally exercises the deploy-static leg.
       site-transport: staging
+      # Keep THIS run's staging dir alive after deploy-static so the sibling
+      # visual-check job can pull it while it runs (defer leg of PR #44).
+      staging-retention: defer
       quarto-image: "ghcr.io/ebpro/solen:quarto-full-build-20261010T172146Z"
       profiles: "notes,slides"
+      # Callee default FALSE — omitting = green-but-UNPUBLISHED (2026-10-20 fleet incident class).
       deploy-static: ${{ github.event_name != 'pull_request' }}
-      # cf-project-name: "your-repo-name"  # Optional: override auto-derived name
       enable-docker: false
+
+  visual-check:
+    needs: render
+    # Deliberately NO `if: github.event_name == 'push'` here — evidence run 2 (PR event)
+    # must hit the loud missing-transport error instead of being silently skipped.
+    uses: ebpro/_quarto-utils/.github/workflows/visual-check.yml@verify/44-selfpin
+    # Schema adaptation vs the file's own snippet B: head visual-check.yml declares NO
+    # on.workflow_call.secrets section, so the scoped mapping
+    #   secrets: { TEACHING_DEPLOY_SSH_KEY: ... }
+    # would be a startup cliff (named secret undeclared in callee). inherit is the only
+    # valid form at this commit — recorded as a canary finding for the PR owner.
+    secrets: inherit
+    with:
+      site-source: staging
+      staging-dir: ${{ needs.render.outputs.staging-dir }}
+      staging-sha256: ${{ needs.render.outputs.staging-sha256 }}
