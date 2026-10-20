@@ -85,10 +85,18 @@ on:
     # "staging-dir malformed …: ''"). Purely additive: artifact-transport
     # consumers read none of these; values mirror the render job outputs.
     outputs:
-      staging-dir: ${{ jobs.render.outputs.staging-dir }}
-      staging-zip: ${{ jobs.render.outputs.staging-zip }}
-      staging-sha256: ${{ jobs.render.outputs.staging-sha256 }}
-      staging-ready: ${{ jobs.render.outputs.staging-ready }}
+      staging-dir:
+        description: 'vai teaching-staging/<repo>/<run>-<attempt> dir (empty when site-transport=artifact)'
+        value: ${{ jobs.render.outputs.staging-dir }}
+      staging-zip:
+        description: 'Staged zip path on vai (redundancy only; consumers re-derive from staging-dir)'
+        value: ${{ jobs.render.outputs.staging-zip }}
+      staging-sha256:
+        description: 'sha256 digest of the staged zip (digest-attested pull)'
+        value: ${{ jobs.render.outputs.staging-sha256 }}
+      staging-ready:
+        description: 'Staging handoff readiness flag'
+        value: ${{ jobs.render.outputs.staging-ready }}
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
