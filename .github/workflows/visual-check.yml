@@ -153,6 +153,10 @@ on:
         required: false
         type: boolean
         default: true
+    secrets:
+      TEACHING_DEPLOY_SSH_KEY:
+        required: false
+        description: "SSH private key for the staging site pull (vai.univ-tln.fr); consumed ONLY when site-source is staging/auto-with-staging"
 
 defaults:
   run:
