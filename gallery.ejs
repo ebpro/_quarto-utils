@@ -19,7 +19,7 @@
     <% if (item.provide_notes !== false) { %>
     <a href="<%= item.path.replace('.qmd', '.html') %>" class="g-btn g-btn--notes"><span>Notes</span></a>
     <% } %>
-    <% if (item.provide_slides !== false) { %>
+    <% if (item.provide_slides !== false && /\/[^/]*_L_[^/]*\.qmd$/.test(item.path)) { %>
     <a href="_slides<%= item.path.replace('.qmd', '.html') %>" class="g-btn g-btn--slides"><span>Slides</span></a>
     <% } %>
   </div>
