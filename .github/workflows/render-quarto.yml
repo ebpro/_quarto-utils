@@ -1,3 +1,4 @@
+# v1.3.38-candidate: caller-overridable render runner placement (input runner-labels — JSON-array string consumed via fromJSON() at jobs.render.runs-on; default = the historical [self-hosted, linux, ebpro-org, x64]; deploy-static intentionally NOT retargetable).
 # v1.3.35: site-zip artifact lifecycle — 1-day retention floor at upload + purge after a successful deploy-static rsync (Team-plan 2 GiB artifact quota).
 # v1.3.31-candidate: hang watchdog for the render step (input hang-detection-minutes, default 0 = off).
 name: Render Quarto Documents (reusable)
@@ -73,6 +74,28 @@ on:
         required: false
         type: boolean
         default: true
+      # v1.3.38-candidate: caller-side runner retargeting for the render job.
+      # String-typed input holding a JSON array, consumed via fromJSON() at
+      # jobs.render.runs-on. Why this shape:
+      #   - `inputs` is a documented context for jobs.<job_id>.runs-on
+      #     (GitHub contexts reference, "Context availability" table:
+      #     github, needs, strategy, matrix, vars, inputs). This is NOT the
+      #     actions/runner#1555 lineage — that rejection concerned job-level
+      #     timeout-minutes, which this file deliberately keeps literal
+      #     (see the render job comment below).
+      #   - A string input sidesteps the workflow_call array-coercion
+      #     question entirely; fromJSON() is the documented idiom for
+      #     list-valued runs-on and mirrors the coercion already used at the
+      #     render step's timeout-minutes: fromJSON(inputs.render-timeout-minutes).
+      #   - The officially documented alternative — runs-on: [self-hosted,
+      #     "${{ inputs.<label> }}"] with quoted interpolation — only varies
+      #     ONE label; the JSON-array form lets a caller move the job to a
+      #     differently-labelled pool (e.g. ebpro-org-arm) in one input.
+      runner-labels:
+        description: 'v1.3.38-candidate: JSON array of runner labels for the render job, e.g. ["self-hosted","linux","ebpro-org","ebpro-org-arm"]. Default `["self-hosted","linux","ebpro-org","x64"]` is exactly the historical placement — wrappers passing nothing see zero behaviour change. Labels MUST match runners that actually exist: an unsatisfiable selection queues until timeout instead of failing. Known pools: ebpro-org-arm (arm64; maxRunners: 2, single VM, minRunners: 0 — budget a cold-start penalty of several minutes when the pool is idle) and ebpro-org-large (heavy builds). A malformed or empty JSON string fails the run loudly at workflow preparation (fromJSON() returns null -> runs-on evaluates empty -> validation error), never silently.'
+        required: false
+        type: string
+        default: '["self-hosted","linux","ebpro-org","x64"]'
 
 concurrency:
   group: render-${{ github.event.repository.full_name }}-${{ github.ref }}
@@ -89,7 +112,16 @@ jobs:
     # `render-timeout-minutes` input below; the job timer is only the outer
     # safety net. Wrappers must keep render-timeout-minutes <= 90.
     timeout-minutes: 120
-    runs-on: [self-hosted, linux, ebpro-org, x64]
+    # v1.3.38-candidate: placement is caller-overridable via the
+    # `runner-labels` JSON-array input (on.workflow_call.inputs, above).
+    # The default resolves to exactly the historical [self-hosted, linux,
+    # ebpro-org, x64] — every existing wrapper passes nothing and lands on
+    # the same runners as before. fromJSON() is evaluated at job
+    # preparation; `inputs` is a documented context for
+    # jobs.<job_id>.runs-on. Malformed/empty JSON -> fromJSON returns null
+    # -> runs-on evaluates empty -> the run fails at workflow validation
+    # with a clear error rather than queueing on a wrong runner.
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     permissions:
       contents: read
       actions: write
