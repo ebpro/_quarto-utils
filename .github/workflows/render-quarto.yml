@@ -68,6 +68,11 @@ on:
         required: false
         type: string
         default: 'artifact'
+      staging-retention:
+        description: 'Lifetime of THIS run''s staging dir on vai (consumed by the deploy-static "Cleanup staging" step; no-op for site-transport=artifact): cleanup = current behavior (dir removed at the end of a green deploy); defer = keep it so a sibling visual-check job (site-source: staging/auto) can pull it while it runs (deploy-static finishes in seconds; visual-check needs minutes — removing on success races it). The keep-N sweep + age-out still run under defer; the deferred dir is reclaimed by LATER runs'' sweeps (keep-3, 60-min floor, 14 d). Validated string (cleanup|defer) in-step — workflow_call has no choice type.'
+        required: false
+        type: string
+        default: 'cleanup'
       seo-directives:
         description: 'Index directives on deployed HTML (default-on): push to the DEFAULT branch (develop/ family) -> website.site-url + format.html.canonical-url (Quarto emits the canonical link + a per-repo sitemap.xml); push to any OTHER branch (previews/<slug>/ family) -> <meta name="robots" content="noindex, follow"> on the rendered HTML/Revealjs pages. Tags/releases get NO directive (release canonical strategy pending fleet v-tag adoption); pull_request renders are skipped entirely. Set false per-wrapper to opt out.'
         required: false
@@ -1871,10 +1876,19 @@ jobs:
         # Hard age-out at 14 days. Positive eviction assertions afterwards.
         # Housekeeping only: any purge problem => ::warning:: + exit 0 (content
         # is already live); the job is never failed by this step.
+        # EXCEPTION: a malformed staging-retention INPUT is a caller config error
+        # (not a purge problem) => ::error:: + exit 1 — refusing to guess between
+        # removing and deferring a dir a sibling visual-check may still need.
+        # staging-retention=defer: block (a) KEPT (echoes DEFER) so a sibling
+        # visual-check job (site-source: staging/auto) can pull this run-dir
+        # while it runs — the keep-N sweep + age-out below are unchanged and
+        # reclaim the deferred dir via LATER runs (fresh dirs are inside the
+        # 60-min floor, so nothing here disturbs this run's assertions).
         if: success() && github.event_name == 'push' && inputs.site-transport != 'artifact'
         env:
           SITE_TRANSPORT: ${{ inputs.site-transport }}
           STAGING_DIR: ${{ needs.render.outputs.staging-dir }}
+          STAGING_RETENTION: ${{ inputs.staging-retention }}
         run: |
           set -uo pipefail
           require_staging_dir() {
@@ -1913,10 +1927,18 @@ jobs:
             echo "::warning::run-dir '$RUN_DIR' is not <run-id>-<attempt> — cleanup skipped (no blind rm)"
             exit 0
           fi
+          case "$STAGING_RETENTION" in
+            cleanup) SKIP_CUR=false ;;
+            defer)   SKIP_CUR=true ;;
+            *)
+              echo "::error::Invalid staging-retention '$STAGING_RETENTION' — expected cleanup | defer (workflow_call has no choice type; validated here per the site-transport doctrine). Config error: failing loudly rather than guessing a retention mode."
+              exit 1
+              ;;
+          esac
           RC=0
-          OUT="$(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" bash -s -- "teaching-staging/$REPO" "$RUN_DIR" <<'REMOTE'
+          OUT="$(ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "bruno@vai.univ-tln.fr" bash -s -- "teaching-staging/$REPO" "$RUN_DIR" "$SKIP_CUR" <<'REMOTE'
           set -u
-          BASE="$1"; CUR_RUN="$2"; FAILED=0
+          BASE="$1"; CUR_RUN="$2"; SKIP_CUR="${3:-false}"; FAILED=0
           note() { echo "ASSERT-FAIL $*"; FAILED=1; }
           # Defense-in-depth re-check (authoritative validation is the workflow guard above).
           case "$BASE" in
@@ -1926,14 +1948,26 @@ jobs:
           case "$CUR_RUN" in
             ''|*[!0-9-]*) note "run-dir-rejected '$CUR_RUN'"; exit 2 ;;
           esac
+          case "$SKIP_CUR" in
+            true|false) ;;
+            *) note "skip-cur-rejected '$SKIP_CUR'"; exit 2 ;;
+          esac
           BASE="${BASE%/}"
           CUR="$BASE/$CUR_RUN"
           BEFORE_PROT="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mmin -60 2>/dev/null || true)"
-          # (a) remove the run-dir consumed by THIS run (validated values only)
-          if [ -d "$CUR" ]; then
-            rm -rf "$CUR" || note "rm-current-failed $CUR"
+          # (a) remove the run-dir consumed by THIS run (validated values only);
+          # staging-retention=defer keeps it (echo DEFER) for the sibling
+          # visual-check pull — later runs' keep-N sweeps reclaim it once it
+          # passes the 60-min floor (fresh dirs are never candidates, so this
+          # run's AFTER_COUNT/(d-bis) assertions are undisturbed by the deferral).
+          if [ "$SKIP_CUR" = "true" ]; then
+            echo "DEFER $CUR"
+          else
+            if [ -d "$CUR" ]; then
+              rm -rf "$CUR" || note "rm-current-failed $CUR"
+            fi
+            if [ -e "$CUR" ]; then note "rm-current-survived $CUR"; fi
           fi
-          if [ -e "$CUR" ]; then note "rm-current-survived $CUR"; fi
           # (b) keep-N=3 sweep among DIRECT children older than the 60-min floor
           CANDS="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -mmin +60 2>/dev/null || true)"
           CAND_COUNT="$(printf '%s\n' "$CANDS" | grep -c .)"
@@ -1975,7 +2009,11 @@ jobs:
           if [ "$RC" -ne 0 ] || printf '%s\n' "$OUT" | grep -q '^ASSERT-FAIL'; then
             echo "::warning::staging housekeeping incomplete (rc=$RC) — deployment already live; nothing retried blind. Check vai permissions/quota."
           fi
-          echo "✅ staging cleanup pass: consumed $STAGING_DIR removed, keep-N=3 (floor 60 min), age-out 14 d"
+          if [ "$SKIP_CUR" = "true" ]; then
+            echo "✅ staging cleanup pass: $STAGING_DIR DEFERRED (staging-retention=defer — reclaimed by later runs' sweeps), keep-N=3 (floor 60 min), age-out 14 d"
+          else
+            echo "✅ staging cleanup pass: consumed $STAGING_DIR removed, keep-N=3 (floor 60 min), age-out 14 d"
+          fi
           exit 0
 
       - name: Log vai home disk usage (df -h ~, read-only)

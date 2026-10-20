@@ -318,6 +318,28 @@ jobs:
       render-timeout-minutes: 90   # DEV-ADV : render complet mesuré ~38 min, hangs observés
 ```
 
+## 🔍 Contrôle visuel (`visual-check.yml`) — transports de site
+
+Le workflow mutualisé `visual-check.yml` reçoit le site à auditer par l'un des
+trois transports (input `site-source`, défaut `artifact` = comportement
+historique inchangé) :
+
+- `artifact` : téléchargement du `site-zip` de la même exécution (mode
+  historique ; incompatible avec `site-transport: staging`, qui ne publie
+  plus d'artefact) ;
+- `staging` : récupération SSH du répertoire de staging de CETTE exécution
+  sur vai (`needs.render.outputs.staging-dir` + digest attesté
+  `staging-sha256`) — nécessite `secrets: inherit` côté appelant et
+  `staging-retention: defer` côté render (sinon `deploy-static` supprime le
+  répertoire avant la lecture) ; les PR ne poussent jamais en staging :
+  gated par `if: github.event_name == 'push'` ;
+- `auto` : artefact d'abord, repli staging ensuite — mode de migration.
+
+Les trois cadrans additionnels : `gate` (`advisory` | `error` |
+`error-strict`), `report-upload` / `report-retention-days`, et
+`timeout-minutes` du job (défaut 30, inchangé). Détail et snippets d'appel
+dans l'en-tête de `.github/workflows/visual-check.yml`.
+
 ## 🛠️ Scripts utilitaires
 
 ### Génération d'images optimisées
