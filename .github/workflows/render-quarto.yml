@@ -58,6 +58,11 @@ on:
         required: false
         type: number
         default: 0
+      render-memory-limit:
+        description: '2026-10-20: --memory cap for the RENDER container (docker run --memory). Bounds it inside the dind sidecar cgroup (6Gi since 2026-10-20) and leaves headroom for dockerd + cell-spawned sibling containers (postgres etc., intentionally unbounded - content-controlled). Pairs with JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=25 set on the same container so the IJava JVM sizes its heap to the container limit instead of reading node RAM: heap exhaustion then surfaces as a LOUD in-JVM OutOfMemoryError before any silent cgroup OOM-kill (exit-137 class). Raise per-wrapper only for proven memory-hungry content; value must be a valid docker --memory size (e.g. 5g).'
+        required: false
+        type: string
+        default: '5g'
       freeze:
         description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. v1.3.27: default switched to FALSE — pins must not silently adopt the freeze machinery; wrappers opt in explicitly with `freeze: true`. Set false (default) to force full cold execution.'
         required: false
@@ -371,6 +376,7 @@ jobs:
           TEACHING_BASE_URL: ${{ secrets.TEACHING_BASE_URL }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           SEO_DIRECTIVES: ${{ inputs.seo-directives }}
+          RENDER_MEMORY_LIMIT: ${{ inputs.render-memory-limit }}
         run: |
           RENDER_CONTAINER="quarto-render-${RUN_ID}"
           # Extra docker-run args. The base env and the 'dind' host mapping are
@@ -389,6 +395,18 @@ jobs:
           # apply even when enable-docker=false, otherwise the JVM gets
           # UnknownHostException: dind.
           DOCKER_ARGS+=(--add-host dind:host-gateway)
+          # 2026-10-20: memory bounding pair for the render container (input
+          # render-memory-limit, default 5g). The dind sidecar cgroup is 6Gi
+          # (since 2026-10-20); an unbounded render container could grow past it
+          # and be killed SILENTLY (exit-137, no JVM diagnostic - the kernel-hang
+          # family signature). --memory caps the container at the limit;
+          # MaxRAMPercentage=25 makes the JVM inside size its heap to the
+          # CONTAINER limit (not node RAM), so the JVM hits its own ceiling and
+          # fails LOUDLY (OutOfMemoryError in the render log) before the cgroup
+          # OOM-killer can act. Cell-spawned siblings (postgres etc.) are NOT
+          # bounded here - they are content-controlled.
+          DOCKER_ARGS+=(--memory="$RENDER_MEMORY_LIMIT")
+          DOCKER_ARGS+=(-e "JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=25")
           if [ "$ENABLE_DOCKER" = "true" ]; then
             # Skip socket mount in DOCKER_ARGS when DOCKER_MOUNTS (auto-detect step) already provides it
             if [ -z "${DOCKER_MOUNTS:-}" ]; then
