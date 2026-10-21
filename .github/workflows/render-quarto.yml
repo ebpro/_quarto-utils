@@ -1,3 +1,4 @@
+# post-v1.3.39 (pending tag): deploy-static emits card.json (JSON-LD data fragment, catalog Phase 1 — docs/card-json.md); fail-soft, zero new inputs, no wrapper change.
 # v1.3.38-candidate: caller-overridable render runner placement (input runner-labels — JSON-array string consumed via fromJSON() at jobs.render.runs-on; default = the historical [self-hosted, linux, ebpro-org, x64]; deploy-static intentionally NOT retargetable).
 # v1.3.35: site-zip artifact lifecycle — 1-day retention floor at upload + purge after a successful deploy-static rsync (Team-plan 2 GiB artifact quota).
 # v1.3.31-candidate: hang watchdog for the render step (input hang-detection-minutes, default 0 = off).
@@ -2288,6 +2289,116 @@ jobs:
           echo "REPO=$REPO" >> "$GITHUB_ENV"
           echo "SUBPATH=$SUBPATH" >> "$GITHUB_ENV"
           echo "Cible de déploiement : bruno@vai.univ-tln.fr:teaching-material/$REPO/$SUBPATH/"
+
+      - name: Emit card.json (JSON-LD)
+        # Catalog Phase 1 (docs/card-json.md): a DATA-ONLY JSON-LD fragment
+        # beside the site, schema.org vocabulary, no bespoke schema. The
+        # producer emits LOCAL truth only (title/description/dates/url/
+        # language/keywords); teaching-catalog stays the central composer
+        # (classification/liveness/ordering — the catalog OVERRIDES this card).
+        # Insertion point: after "Compute target path" (REPO/SUBPATH arrive via
+        # GITHUB_ENV), immediately before the site rsync, so the file lands at
+        # the site-dir root and publishes as <repo>/<branch>/card.json.
+        # FAIL-SOFT by design: set +e + EXIT-trap coercion + continue-on-error
+        # — a card defect must NEVER block a deploy; an absent card.json just
+        # means the catalog falls back to its current topic scraping.
+        # Zero new inputs: every value derives from contexts/secrets already
+        # available in this reusable. No consumer or wrapper change required.
+        if: github.event_name == 'push' && env.DEPLOY_SKIP != 'true'
+        continue-on-error: true
+        env:
+          TEACHING_BASE_URL: ${{ secrets.TEACHING_BASE_URL }}
+          REPO_DESCRIPTION: ${{ github.event.repository.description }}
+          REPO_PUSHED_AT: ${{ github.event.repository.pushed_at }}
+          REPO_TOPICS_JSON: ${{ toJSON(github.event.repository.topics) }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set +e
+          trap 'exit 0' EXIT
+          [ -d site ] || { echo "::notice::card.json: site/ absent — émission ignorée"; exit 0; }
+          [ -n "${REPO:-}" ] || { echo "::warning::card.json: REPO vide — émission ignorée"; exit 0; }
+
+          # @type par PRÉFIXE DU NOM (documenté dans docs/card-json.md ; le
+          # catalogue VALIDE contre les topics area-* en Phase 2 et préfère le topic).
+          case "$REPO" in
+            lecture*)          CARD_TYPE="Course";;
+            notebook*)         CARD_TYPE="LearningResource";;
+            sample*|demo*)     CARD_TYPE="SoftwareSourceCode";;
+            *)                 CARD_TYPE="CreativeWork";;
+          esac
+
+          # URL du site déployé : même formule que la cible du rsync (chemin
+          # teaching-material/$REPO/$SUBPATH). TEACHING_BASE_URL = secret d'org
+          # déjà utilisé par le job render pour la baseurl ; fallback = base de
+          # navigation publique confirmée (vai est l'hôte rsync, pas l'URL).
+          CARD_BASE="${TEACHING_BASE_URL:-https://bruno.univ-tln.fr/teaching-material}"
+          CARD_URL="${CARD_BASE%/}/${REPO}/${SUBPATH}/"
+
+          # name/description depuis le payload push (dégradation vide propre).
+          CARD_DESC="${REPO_DESCRIPTION:-}"
+          CARD_NAME="$CARD_DESC"; [ -n "$CARD_NAME" ] || CARD_NAME="$REPO"
+
+          # dateModified: payload pushed_at -> fallback mtime index.html -> now.
+          CARD_DATE="${REPO_PUSHED_AT:-}"
+          if [ -z "$CARD_DATE" ] && [ -f site/index.html ]; then
+            CARD_EPOCH="$(stat -c %Y site/index.html 2>/dev/null || stat -f %m site/index.html 2>/dev/null)"
+            [ -n "$CARD_EPOCH" ] && CARD_DATE="$(date -u -r "$CARD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+          fi
+          [ -n "$CARD_DATE" ] || CARD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # keywords: topics[].name joints (payload = [{node_id,name},…] ; null -> vide).
+          CARD_KEYWORDS=""
+          if [ -n "${REPO_TOPICS_JSON:-}" ] && [ "$REPO_TOPICS_JSON" != "null" ]; then
+            if command -v jq >/dev/null 2>&1; then
+              CARD_KEYWORDS="$(printf '%s' "$REPO_TOPICS_JSON" | jq -r '[.[].name] | join(", ")' 2>/dev/null)"
+            else
+              CARD_KEYWORDS="$(printf '%s' "$REPO_TOPICS_JSON" \
+                | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+                | sed -E 's/.*"([^"]*)"$/\1/' | paste -sd ',' - 2>/dev/null | sed 's/,/, /g')"
+            fi
+          fi
+
+          # inLanguage: <html lang="…"> du index.html construit (omis si absent).
+          CARD_LANG="$(sed -n 's/.*<html[^>]*lang="\([^"]*\)".*/\1/p' site/index.html 2>/dev/null | head -n 1)"
+
+          # Échappement JSON des scalaires (guillemets, backslashes, tab/NL/CR).
+          jesc() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\t'/\\t}"; s="${s//$'\r'/\\r}"; printf '%s' "$s"; }
+
+          FIELDS=()
+          FIELDS+=('  "@context": {"@version": 1.1, "@vocab": "https://schema.org/"}')
+          FIELDS+=("  \"@type\": \"$(jesc "$CARD_TYPE")\"")
+          FIELDS+=("  \"name\": \"$(jesc "$CARD_NAME")\"")
+          FIELDS+=("  \"description\": \"$(jesc "$CARD_DESC")\"")
+          FIELDS+=("  \"identifier\": \"$(jesc "$CARD_URL")\"")
+          FIELDS+=("  \"url\": \"$(jesc "$CARD_URL")\"")
+          FIELDS+=("  \"dateModified\": \"$(jesc "$CARD_DATE")\"")
+          [ -n "$CARD_KEYWORDS" ] && FIELDS+=("  \"keywords\": \"$(jesc "$CARD_KEYWORDS")\"")
+          [ -n "$CARD_LANG" ]     && FIELDS+=("  \"inLanguage\": \"$(jesc "$CARD_LANG")\"")
+          [ "$CARD_TYPE" = "LearningResource" ]  && FIELDS+=('  "learningResourceType": "Notebook"')
+          [ "$CARD_TYPE" = "SoftwareSourceCode" ] && FIELDS+=("  \"codeRepository\": \"$(jesc "${SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPO}")\"")
+
+          CARD_TMP="$(mktemp)"
+          {
+            printf '{\n'
+            for ((i = 0; i < ${#FIELDS[@]}; i++)); do
+              [ "$i" -gt 0 ] && printf ',\n'
+              printf '%s' "${FIELDS[$i]}"
+            done
+            printf '\n}\n'
+          } > "$CARD_TMP" || { rm -f "$CARD_TMP"; exit 0; }
+
+          # Validation JSON (défense en profondeur ; les deux outils sont optionnels).
+          if command -v jq >/dev/null 2>&1; then
+            jq -e . "$CARD_TMP" >/dev/null 2>&1 || { echo "::warning::card.json invalide (jq) — non publié"; rm -f "$CARD_TMP"; exit 0; }
+          elif command -v python3 >/dev/null 2>&1; then
+            python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CARD_TMP" 2>/dev/null \
+              || { echo "::warning::card.json invalide (python3) — non publié"; rm -f "$CARD_TMP"; exit 0; }
+          fi
+
+          mv "$CARD_TMP" site/card.json \
+            && echo "✅ card.json émis (site racine) : @type=$CARD_TYPE url=$CARD_URL" \
+            || echo "::warning::card.json: mv vers site/ a échoué — non publié"
+          exit 0
 
       - name: rsync to personal server (scoped --delete)
         id: rsync-deploy
