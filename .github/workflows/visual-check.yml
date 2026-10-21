@@ -554,6 +554,48 @@ jobs:
               f.write("\n".join(lines) + "\n")
           SUMMARY_EOF
 
+      - name: Violations digest (job log)
+        if: always()
+        run: |
+          # Fail-soft per-row evidence BEFORE the artifact upload: when the org
+          # Actions-storage quota kills "Upload visual-check report", the job log keeps
+          # only the aggregate totals (DEV-ADV run #108 lost all per-row detail this
+          # way; attribution had to come from an older run's surviving artifact). Echo
+          # class counts + the first 50 raw rows into the JOB LOG so attribution
+          # outlives a red upload. Never changes the job result.
+          set +e
+          V=vqa-report/violations.jsonl
+          echo "::group::violations digest"
+          if [ ! -s "$V" ]; then
+            echo "no rows in $V (check incomplete or zero violations) - nothing to digest"
+          else
+            python3 - "$V" <<'DIGEST_EOF' || echo "digest: aggregation failed (fail-soft)"
+          import json, sys, collections
+          rows = []
+          with open(sys.argv[1]) as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      rows.append(json.loads(line))
+                  except Exception:
+                      pass
+          sev = collections.Counter(r.get("severity", "?") for r in rows)
+          chk = collections.Counter(r.get("check", "?") for r in rows)
+          print("rows: %d | by raw severity: %s (? = no per-row severity field; registry fallback is in gate.json)" % (len(rows), dict(sev)))
+          for c, n in sorted(chk.items(), key=lambda kv: (-kv[1], kv[0])):
+              print("  %-32s %d" % (c, n))
+          DIGEST_EOF
+            if [ -s vqa-report/gate.json ]; then
+              python3 -c "import json;g=json.load(open('vqa-report/gate.json'));print('gate.json: %d rows, %d error-class, %d warning' % (g['totalRows'], g['errorRows'], g.get('warningRows', 0)))" || true
+            fi
+            echo "--- first 50 rows (verbatim) ---"
+            head -n 50 "$V"
+          fi
+          echo "::endgroup::"
+          exit 0
+
       - name: Upload visual-check report
         if: always() && inputs.report-upload
         uses: actions/upload-artifact@v4
