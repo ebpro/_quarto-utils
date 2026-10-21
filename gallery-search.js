@@ -1,3 +1,8 @@
+/* Canonical source for the inlined copies in _quarto-notes.yml and
+   _quarto-notes-en.yml (include-in-header). The inlined bodies are
+   byte-identical to this file; keep the copies in sync. Inlining is
+   required because a relative <script src> in include-in-header is emitted
+   verbatim and 404s on nested lecture pages (fix/gallery-search-nested-path). */
 /* Gallery search - client-side filter for course index cards */
 (function() {
   'use strict';
