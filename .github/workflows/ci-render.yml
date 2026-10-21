@@ -31,6 +31,12 @@ jobs:
       # entirely (quota-immune) and deploy-static pulls from teaching-staging on
       # the server — the self-test finally exercises the deploy-static leg.
       site-transport: staging
+      hang-detection-minutes: 15
+      # seo-directives: false — fleet rule for slides-profile consumers pinned >=v1.3.38
+      # (PR #38 safeMove double-output class; notebook-git canary precedent; same
+      # shape as the v1.3.39 pin-wave consumers). The develop-only direct run of
+      # render-quarto.yml keeps exercising the seo layer defaults.
+      seo-directives: false
       quarto-image: "ghcr.io/ebpro/solen:quarto-full-build-20261010T172146Z"
       profiles: "notes,slides"
       deploy-static: ${{ github.event_name != 'pull_request' }}
