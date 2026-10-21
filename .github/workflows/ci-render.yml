@@ -31,7 +31,7 @@ jobs:
       # entirely (quota-immune) and deploy-static pulls from teaching-staging on
       # the server — the self-test finally exercises the deploy-static leg.
       site-transport: staging
-      quarto-image: "ghcr.io/ebpro/solen:quarto-full-build-20261010T172146Z"
+      quarto-image: "ghcr.io/ebpro/solen:quarto-full-68c5fb9"
       profiles: "notes,slides"
       deploy-static: ${{ github.event_name != 'pull_request' }}
       # cf-project-name: "your-repo-name"  # Optional: override auto-derived name
