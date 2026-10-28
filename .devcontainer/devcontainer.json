@@ -7,9 +7,7 @@
     // use. This is typically the main development container service	
     "service": "devcontainer",
 	
-	// initializeCommand: runs on the host before container build; makes Reopen-in-Container work
-	// on a naive fresh clone of a consumer lecture repo (the file is consumed via the consumer's
-	// `.devcontainer` symlink; SSH key lives on the host).
+	// Utile quand _quarto-utils est déjà matérialisé mais périmé (refresh du checkout avant build). NE SAUVE PAS le clone naïf: sans submodule initialisé, le symlink .devcontainer du repo consommateur est pendant et cette config n'est jamais lue — cloner avec `git clone --recurse-submodules` ou faire `git submodule update --init --recursive` d'abord (procédure documentée côté cours).
 	"initializeCommand": "git -C ${localWorkspaceFolder} submodule update --init _quarto-utils",
 
 	// The 'workspaceFolder' property is the path to the workspace folder in the container
@@ -20,10 +18,7 @@
 	// The 'shutdownAction' property defines what action to take when the container is stopped.
 	"shutdownAction": "stopCompose",
 
-	// runServices: avoids starting the broken `notebook-builder` service (command path
-	// `quarto-utils/_utils/build.sh` does not exist — tracked separately, DO NOT fix compose here)
-	// and the dind sidecar on plain editing sessions; lessons needing Docker:
-	// `docker compose up docker` from the consumer repo root.
+	// N'évite que le service notebook-builder (commande cassée quarto-utils/_utils/build.sh — follow-up séparé). Le sidecar dind "docker" DÉMARRE QUAND MÊME : le service devcontainer hérite depends_on: docker (condition service_healthy) de x-common-config, et le CLI fait un `docker compose up -d devcontainer` sans --no-deps. Le rendre optionnel exigerait une restructuration de compose.yml (décision flotte).
 	"runServices": ["devcontainer"],
 
 	// Add VS Code extensions to install in container
@@ -76,16 +71,7 @@
         }
     },
 
-	// mounts: read-only SSH key material so git/gh work INSIDE the devcontainer; uses localEnv
-	// HOME (tilde expansion not relied upon).
-	"mounts": [
-		{
-			"source": "${localEnv:HOME}/.ssh",
-			"target": "/home/jovyan/.ssh",
-			"type": "bind",
-			"readonly": true
-		}
-	],
+	// Le montage bind de ~/.ssh a été retiré (revue de conformité PR #54): via dockerComposeFile, le CLI devcontainers traduit mounts en volumes compose SANS honorer "readonly" (spec Mount: type/source/target uniquement) => ~/.ssh serait monté EN ÉCRITURE dans un conteneur root. VS Code Dev Containers forwardne nativement SSH_AUTH_SOCK (agent forwarding) vers le conteneur et le terminal intégré — c'est le mécanisme retenu pour git/gh dans le conteneur. Un montage statique de clés, s'il devient nécessaire, devra être exprimé dans compose.yml avec ":ro" (décision flotte séparée).
 
 	// NOTE: compose service runs as root (user: root) while VS Code server runs as jovyan —
 	// host-tree ownership friction is a known follow-up; see PR body.
