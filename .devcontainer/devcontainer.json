@@ -1,11 +1,17 @@
 {
     // Path to the Docker Compose file relative to devcontainer.json	
     "dockerComposeFile": "../_quarto-utils/compose.yml",
+    // digest: sha256:a53574f93dc37084a78607bea057c7a0f87344bbc1e6df14193755b0ce90983c
   	
 	// The 'service' property is the name of the service for the container that VS Code should
     // use. This is typically the main development container service	
     "service": "devcontainer",
 	
+	// initializeCommand: runs on the host before container build; makes Reopen-in-Container work
+	// on a naive fresh clone of a consumer lecture repo (the file is consumed via the consumer's
+	// `.devcontainer` symlink; SSH key lives on the host).
+	"initializeCommand": "git -C ${localWorkspaceFolder} submodule update --init _quarto-utils",
+
 	// The 'workspaceFolder' property is the path to the workspace folder in the container
 	// that VS Code should use. This is typically the path to the workspace folder in the
 	// container that the service is using
@@ -13,6 +19,12 @@
 
 	// The 'shutdownAction' property defines what action to take when the container is stopped.
 	"shutdownAction": "stopCompose",
+
+	// runServices: avoids starting the broken `notebook-builder` service (command path
+	// `quarto-utils/_utils/build.sh` does not exist — tracked separately, DO NOT fix compose here)
+	// and the dind sidecar on plain editing sessions; lessons needing Docker:
+	// `docker compose up docker` from the consumer repo root.
+	"runServices": ["devcontainer"],
 
 	// Add VS Code extensions to install in container
     "customizations": {
@@ -64,6 +76,19 @@
         }
     },
 
+	// mounts: read-only SSH key material so git/gh work INSIDE the devcontainer; uses localEnv
+	// HOME (tilde expansion not relied upon).
+	"mounts": [
+		{
+			"source": "${localEnv:HOME}/.ssh",
+			"target": "/home/jovyan/.ssh",
+			"type": "bind",
+			"readonly": true
+		}
+	],
+
+	// NOTE: compose service runs as root (user: root) while VS Code server runs as jovyan —
+	// host-tree ownership friction is a known follow-up; see PR body.
 	// The 'remoteUser' property is the user that VS Code should use when connecting to the container
 	"remoteUser": "jovyan"
 }
