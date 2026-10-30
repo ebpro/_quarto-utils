@@ -6,7 +6,7 @@ x-common-config: &common-config
     DOCKER_TLS_CERTDIR: /certs
     DOCKER_TLS_VERIFY: 1
     DB_USERNAME: ${DB_USERNAME:-dba}
-    DB_PASSWORD: ${DB_PASSWORD:-secretsecret}
+    DB_PASSWORD: ${DB_PASSWORD:-devcontainer-demo}
     DB_URL: ${DB_URL:-jdbc:postgresql://docker/notebook-db}
   volumes: &common-volumes
     - ${PWD}:/home/jovyan/work/local
