@@ -1,0 +1,16 @@
+name: minrepro-matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "minrepro variant (baseline|v1|v2|v3|v4)"
+        type: string
+        default: "baseline"
+
+jobs:
+  minrepro:
+    uses: ./.github/workflows/minrepro-reusable.yml
+    with:
+      v: ${{ github.event.inputs.variant }}
+    secrets: inherit

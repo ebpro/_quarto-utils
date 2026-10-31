@@ -1,0 +1,19 @@
+name: minrepro-reusable
+
+on:
+  workflow_call:
+    inputs:
+      v:
+        description: "minrepro variant marker (no-op)"
+        required: false
+        type: string
+        default: "baseline"
+
+
+jobs:
+  min:
+    runs-on: ubuntu-latest
+    steps:
+      - name: echo ok
+        run: echo "variant=${{ inputs.v }}"
+
