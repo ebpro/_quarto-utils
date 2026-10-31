@@ -37,7 +37,7 @@ jobs:
       # shape as the v1.3.39 pin-wave consumers). The develop-only direct run of
       # render-quarto.yml keeps exercising the seo layer defaults.
       seo-directives: false
-      quarto-image: "ghcr.io/ebpro/solen:quarto-full-build-20261010T172146Z"
+      quarto-image: "ghcr.io/ebpro/solen:quarto-full-56784a2"
       profiles: "notes,slides"
       deploy-static: ${{ github.event_name != 'pull_request' }}
       # cf-project-name: "your-repo-name"  # Optional: override auto-derived name
