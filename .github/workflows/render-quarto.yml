@@ -21,7 +21,7 @@ on:
         description: 'Docker image to use for Quarto (must include `quarto` CLI)'
         required: false
         type: string
-        default: 'harbor.ebruno.fr/ghcr-p2c/ebpro/solen:quarto-full-chore-add-pyproject'
+        default: 'ghcr.io/ebpro/solen:quarto-full-56784a2'
       utils-repo:
         description: 'Repository that provides shared Quarto utils (owner/repo)'
         required: false

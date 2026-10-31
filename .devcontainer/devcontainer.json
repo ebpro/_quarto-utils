@@ -1,7 +1,7 @@
 {
     // Path to the Docker Compose file relative to devcontainer.json	
     "dockerComposeFile": "../_quarto-utils/compose.yml",
-    // digest: sha256:a53574f93dc37084a78607bea057c7a0f87344bbc1e6df14193755b0ce90983c
+    // digest: sha256:43cc7d8d6e36b398f4715e6854eeb4634559c8f877fc9a041640636b7a04f752
   	
 	// The 'service' property is the name of the service for the container that VS Code should
     // use. This is typically the main development container service	
