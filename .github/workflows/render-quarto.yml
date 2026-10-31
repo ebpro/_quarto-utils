@@ -341,7 +341,7 @@ jobs:
         # entries to this caller workflow (the default), which is exactly
         # the isolation the design wanted; keys stay collision-free via the
         # qfreeze-v1- prefix.
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ github.workspace }}/_freeze
@@ -1897,7 +1897,7 @@ jobs:
           steps.cache-restore.outputs.cache-hit != 'true' &&
           steps.freeze-size.outputs.under_cap == 'true'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ github.workspace }}/_freeze
