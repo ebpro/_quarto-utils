@@ -66,22 +66,6 @@ on:
         required: false
         type: string
         default: '5g'
-      hang-action:
-        # v1.3.37: per-repo escape hatch. The input description of
-        # hang-detection-minutes tells users to RAISE THE CAP for known
-        # long-silent-cell content; that trades the hang for a blind wait.
-        # report-only separates the two concerns: keep detecting, keep
-        # reporting, keep shipping forensics — stop killing.
-        # Default 'kill' preserves the v1.3.36 contract bit-for-bit.
-        description: 'v1.3.37: what the hang watchdog does once sustained silence has been corroborated as a genuine stall (no kernel child, or zero CPU delta). kill (default) = the v1.3.36 contract: ::error::HANG-DETECTED, forensics, docker kill, exit 137 via PIPESTATUS. report-only = escape hatch for known long-silent-cell content: the HANG-DETECTED annotation, the hang-report and both forensics transports are retained, but NO docker kill is issued and render-timeout-minutes stays the sole backstop. Default-off (kill): zero behaviour change for every wrapper that does not set it.'
-        required: false
-        type: string
-        default: 'kill'
-      hang-max-extensions:
-        description: 'v1.3.37: BOUND on the liveness corroborator. When a kernel child is present AND accumulating CPU across two docker-top samples, the watchdog does not kill: it emits ::warning::LIVE-KERNEL-CORROBORATED and re-arms for WATCHDOG_EXTEND_SECS (300 s). This input caps how many such extensions may be granted, so a hang can never become unbounded: worst case = hang-detection-minutes + (N x 5 min), N=3 by default (+15 min). 0 = never extend, i.e. the pre-v1.3.37 kill-on-silence behaviour. Only reachable when hang-detection-minutes is non-zero.'
-        required: false
-        type: number
-        default: 3
       freeze:
         description: 'v1.3.25: enable the cell-output freeze cache (restore/save of _freeze + .quarto under actions/cache scope quarto-freeze, keyed by image digest + quarto version + content snapshot). Runtime opt-in is an UNTRACKED root _metadata.yml (execute.freeze: auto) written on non-PR runs. v1.3.27: default switched to FALSE — pins must not silently adopt the freeze machinery; wrappers opt in explicitly with `freeze: true`. Set false (default) to force full cold execution.'
         required: false
