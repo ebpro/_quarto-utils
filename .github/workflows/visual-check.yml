@@ -598,7 +598,7 @@ jobs:
 
       - name: Upload visual-check report
         if: always() && inputs.report-upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: visual-check-report
           path: vqa-report

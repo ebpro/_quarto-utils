@@ -1726,7 +1726,7 @@ jobs:
         id: upload-site
         if: inputs.site-transport != 'staging'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: site-zip
           path: site-zip.zip
@@ -1749,7 +1749,7 @@ jobs:
         # by the artifact quota must never mask the HANG-DETECTED error.
         if: always() && (failure() || cancelled())
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quarto-exec-log
           # v1.3.31-candidate: hang-forensics/ rides along when present (ignore semantics).
