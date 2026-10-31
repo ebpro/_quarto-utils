@@ -117,7 +117,7 @@ on:
         description: 'Container image providing node + chrome-headless-shell (default = the image the fleet currently renders on)'
         required: false
         type: string
-        default: 'ghcr.io/ebpro/solen:quarto-full-build-20261010T172146Z'
+        default: 'ghcr.io/ebpro/solen:quarto-full-56784a2'
       filter:
         description: 'Optional regex passed through to the tool page filter (empty = check every page)'
         required: false
