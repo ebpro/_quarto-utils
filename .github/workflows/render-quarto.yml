@@ -102,18 +102,6 @@ on:
         required: false
         type: boolean
         default: true
-      # reserved: dynamic labels disabled pending Actions-dispatch fix (0-job startup_failure since v1.3.40)
-      # The runs-on: ${{ fromJSON(inputs.runner-labels) }} form (cc1632c, PR #47,
-      # first shipped in v1.3.40) breaks reusable dispatch: every consumer of
-      # callee bodies 25175ff..1ae2095 dies 0-job at preparation. The declaration
-      # is kept (optional) so caller wrappers passing runner-labels stay
-      # schema-compatible; the value is NOT consumed — jobs.render.runs-on is
-      # the static historical array (see below).
-      runner-labels:
-        description: 'v1.3.38-candidate: JSON array of runner labels for the render job, e.g. ["self-hosted","linux","ebpro-org","ebpro-org-arm"]. Default `["self-hosted","linux","ebpro-org","x64"]` is exactly the historical placement — wrappers passing nothing see zero behaviour change. Labels MUST match runners that actually exist: an unsatisfiable selection queues until timeout instead of failing. Known pools: ebpro-org-arm (arm64; maxRunners: 2, single VM, minRunners: 0 — budget a cold-start penalty of several minutes when the pool is idle) and ebpro-org-large (heavy builds). A malformed or empty JSON string fails the run loudly at workflow preparation (fromJSON() returns null -> runs-on evaluates empty -> validation error), never silently.'
-        required: false
-        type: string
-        default: '["self-hosted","linux","ebpro-org","x64"]'
 
     # workflow_call exposes job outputs to EXTERNAL callers ONLY through this
     # top-level map — without it, needs.<job>.outputs.staging-* resolved to ''
