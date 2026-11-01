@@ -1,3 +1,4 @@
+# post-v1.3.44 (pending tag): expression-cap fix — every ${{ ... }} token hoisted out of all run-blocks into the owning step's env: mapping (a run-block that embeds expressions is measured by the Actions service as ONE expression against its 21000-char cap; the v1.3.37/v1.3.38 watchdog+OOM growth pushed the render block to ~39.6K chars and consumer runs of v1.3.41…v1.3.44 died at preparation with "(Line 454, Col 14): Exceeded max expression length 21000"); the OOM-attribution + watchdog units moved verbatim to scripts/render-sidecar.sh (sourced fail-closed by the render step from the utils checkout, pinned to inputs.utils-ref). Pure size refactor: no change to rendering semantics, outputs, artifacts, hang/OOM/forensics behavior, or the inputs schema.
 # post-v1.3.39 (pending tag): deploy-static emits card.json (JSON-LD data fragment, catalog Phase 1 — docs/card-json.md); fail-soft, zero new inputs, no wrapper change.
 # v1.3.38-candidate: caller-overridable render runner placement (input runner-labels — JSON-array string consumed via fromJSON() at jobs.render.runs-on; default = the historical [self-hosted, linux, ebpro-org, x64]; deploy-static intentionally NOT retargetable).
 # v1.3.35: site-zip artifact lifecycle — 1-day retention floor at upload + purge after a successful deploy-static rsync (Team-plan 2 GiB artifact quota).
@@ -354,10 +355,18 @@ jobs:
       - name: Freeze restore summary
         id: restore-summary
         if: inputs.freeze == true
+        # post-v1.3.44 (expression-cap fix): every ${{ ... }} token hoisted to
+        # env — a run-block containing expressions is measured as ONE
+        # expression against the Actions 21000-char cap.
+        env:
+          FREEZE: ${{ inputs.freeze }}
+          CACHE_HIT: ${{ steps.cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.cache-restore.outputs.cache-matched-key }}
+          CACHE_PRIMARY_KEY: ${{ steps.cache-restore.outputs.cache-primary-key }}
         run: |
           set -uo pipefail
-          HIT='${{ steps.cache-restore.outputs.cache-hit }}'
-          MATCHED='${{ steps.cache-restore.outputs.cache-matched-key }}'
+          HIT="$CACHE_HIT"
+          MATCHED="$CACHE_MATCHED_KEY"
           # cache-hit is 'true' only for an exact primary-key match and can
           # be empty on a plain miss, so the classification also uses the
           # restored dirs (reliable: the pre-restore clean wiped the
@@ -368,7 +377,7 @@ jobs:
           elif [ -d "$GITHUB_WORKSPACE/_freeze" ] || [ -d "$GITHUB_WORKSPACE/.quarto" ]; then
             RESULT=partial
           fi
-          if [ '${{ inputs.freeze }}' != 'true' ]; then
+          if [ "$FREEZE" != 'true' ]; then
             # freeze disabled for this run: restored cache data must not be
             # used (design rule 4 — always rm when freeze=false).
             rm -rf "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto"
@@ -388,7 +397,7 @@ jobs:
             echo "$MSG"
             echo ""
             echo "- matched-key: \`${MATCHED:-<none>}\`"
-            echo "- primary-key: \`${{ steps.cache-restore.outputs.cache-primary-key }}\`"
+            echo "- primary-key: \`$CACHE_PRIMARY_KEY\`"
             echo ""
             echo '```'
             du -sh "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" 2>/dev/null || echo "(no cache dirs present)"
@@ -451,6 +460,15 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           SEO_DIRECTIVES: ${{ inputs.seo-directives }}
           RENDER_MEMORY_LIMIT: ${{ inputs.render-memory-limit }}
+          # post-v1.3.44 (expression-cap fix): the three watchdog inputs were
+          # ${{ }} tokens inside the run-block below — which made the Actions
+          # service measure the WHOLE block as one expression against the
+          # 21000-char cap (v1.3.41+ consumer parse error). They are hoisted
+          # here and consumed by scripts/render-sidecar.sh (sourced below) as
+          # plain env vars; the run-block is now expression-free.
+          HANG_MINUTES: ${{ inputs.hang-detection-minutes }}
+          HANG_ACTION: ${{ inputs.hang-action }}
+          HANG_EXT_MAX: ${{ inputs.hang-max-extensions }}
         run: |
           RENDER_CONTAINER="quarto-render-${RUN_ID}"
           # Extra docker-run args. The base env and the 'dind' host mapping are
@@ -486,48 +504,10 @@ jobs:
           #  below covers the death-path diagnostics for this bound.)
           DOCKER_ARGS+=(--memory="$RENDER_MEMORY_LIMIT")
           DOCKER_ARGS+=(-e "JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=25")
-          # >>> OOM-CAPTURE-BEGIN — extracted verbatim by scripts/test-hang-watchdog.sh
-          #     (case i: every arm must be non-fatal); do not reflow the sentinels.
-          # v1.3.38: OOM self-attribution, emitted to the RETAINED JOB LOG (the
-          # quota-immune transport be6ee49 established). Called on the two death
-          # paths: the watchdog forensics block (container still alive -> the
-          # exec arm adds the container's own cgroup view) and the PIPESTATUS
-          # failure branch (normal death -> runs BEFORE the EXIT trap's rm arm,
-          # so docker inspect may still win the --rm auto-delete race).
-          # The decisive fields are the SIDECAR cgroup's memory.events pair:
-          #   memory.events        aggregates the whole subtree — a docker-
-          #                          enforced OOM of the render child lands here
-          #                          (max/oom/oom_kill) while the sidecar's own
-          #                          cap stayed untouched;
-          #   memory.events.local  fires only when the SIDECAR's own cgroup cap
-          #                          is hit.
-          # Non-zero local counters alongside OOMKilled=false = the old
-          # unattributable shape, now positively attributed to the cluster-side
-          # ceiling instead of the render. ARC runner pods are ephemeral (one
-          # job per pod), so the counters are per-run by construction.
-          # The helper container trick is required because the step's own shell
-          # lives in the RUNNER container's cgroup, a sibling of the sidecar's:
-          # a container started BY the sidecar's dockerd is a cgroup child of
-          # dockerd, hence its parent cgroup IS the sidecar container's cgroup.
-          # --cgroupns=host + a read-only /sys/fs/cgroup bind (resolved in the
-          # daemon's mount namespace) exposes it. The cgroup-v1 fallback reads
-          # the equivalent files. No --oom-score-adj: the cap is cgroup-wide, a
-          # per-process adj does not change which ceiling fires.
-          capture_oom_attribution() {
-            echo "=== oom-attribution ${1:-death} $(date -Is 2>/dev/null || date) ==="
-            docker inspect -f 'OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} OOMKilledAt={{.State.FinishedAt}}' "$RENDER_CONTAINER" 2>/dev/null \
-              || echo "oom-attribution: docker inspect failed (container auto-deleted by --rm, or daemon unreachable)"
-            docker exec "$RENDER_CONTAINER" sh -c 'for f in memory.max memory.current memory.events memory.events.local memory.peak; do echo "--- self-cgroup $f ---"; cat "/sys/fs/cgroup/$f" 2>/dev/null || echo "(absent)"; done' 2>/dev/null \
-              || echo "oom-attribution: self-cgroup not readable (container already gone)"
-            # Single-line sh -c on purpose: shellcheck only parses the literal as an
-            # inner script when sh -c is the direct command (a `timeout 90` prefix or a
-            # multi-line literal both degrade it to plain-string analysis -> SC2016 on
-            # every $var). No timeout wrapper: same un-guarded-daemon posture as the
-            # inspect/exec arms and be6ee49's forensics; step/job timeouts backstop.
-            docker run --rm --cgroupns=host -v /sys/fs/cgroup:/hostcg:ro "$QUARTO_IMAGE" sh -c 'p=$(sed -n "s|^0::|/|p" /proc/1/cgroup 2>/dev/null); if [ -n "$p" ]; then d=$(dirname "$p"); for f in memory.max memory.current memory.events memory.events.local memory.peak; do echo "--- sidecar-cgroup $d $f ---"; cat "/hostcg$d/$f" 2>/dev/null || echo "(absent)"; done; else m=$(sed -n "s|^[0-9]*:memory:|/|p" /proc/1/cgroup 2>/dev/null); if [ -n "$m" ]; then d=$(dirname "$m"); for f in memory.limit_in_bytes memory.usage_in_bytes memory.failcnt memory.oom_control; do echo "--- sidecar-cgroup-v1 $d $f ---"; cat "/hostcg/memory$d/$f" 2>/dev/null || echo "(absent)"; done; else echo "oom-attribution: no cgroup path in /proc/1/cgroup"; fi; fi' 2>/dev/null || echo "oom-attribution: sidecar-cgroup helper failed (cgroupns flag/daemon/mount unsupported)"
-            return 0
-          }
-          # <<< OOM-CAPTURE-END
+          # v1.3.44: the OOM self-attribution unit (capture_oom_attribution +
+          # its design history) moved VERBATIM to scripts/render-sidecar.sh,
+          # which this step sources below (fail-closed). Its two death-path
+          # call sites further down still resolve it from this same shell.
           if [ "$ENABLE_DOCKER" = "true" ]; then
             # Skip socket mount in DOCKER_ARGS when DOCKER_MOUNTS (auto-detect step) already provides it
             if [ -z "${DOCKER_MOUNTS:-}" ]; then
@@ -721,256 +701,19 @@ jobs:
           RENDER_LOG="$GITHUB_WORKSPACE/render-output.log"
           rm -f "$RENDER_LOG"
           # --- v1.3.31-candidate: hang watchdog (input hang-detection-minutes, 0=off) ---
-          # Inactivity cap on the render stream: liveness = max mtime of RENDER_LOG and
-          # quarto-exec.log; on sustained silence the sidecar dumps forensics, emits a
-          # ::error::HANG-DETECTED annotation and docker-kills the render container so
-          # `docker run` exits non-zero. The PIPESTATUS branch below stays the SOLE
-          # step-status decider (subshell runs `set +e`, every probe `|| true`; the
-          # guarded if keeps the main `bash -e` shell inert when the feature is off).
-          #
-          # v1.3.37 — INACTIVITY IS A TRIGGER, NOT A VERDICT. The pre-v1.3.37 sidecar
-          # killed on the mtime deadline alone and only inspected kernel state AFTER the
-          # decision, so a legitimately-busy-but-silent cell (a live python3 kernel
-          # compiling/loading, no stream output) was indistinguishable from a wedged one.
-          # DEV-EXP run 39201344899 / job 117894776666 is exactly that shape: the trip
-          # was correct-by-rule at [17/32] with a kernel started 2.5 s earlier, and the
-          # evidence needed to attribute it was destroyed by the artifact-quota error.
-          # Before ANY kill the sidecar now corroborates liveness with two `docker top`
-          # samples WATCHDOG_PROBE_SECS apart, reading per-PID CPU from
-          # $PROC_ROOT/<pid>/stat (utime+stime clock ticks) and falling back to the ps
-          # TIME column when /proc is unreadable. Verdicts:
-          #   kernel child present AND accumulating CPU -> NO kill:
-          #     ::warning::LIVE-KERNEL-CORROBORATED (names the live PID, the CPU delta
-          #     and the elapsed silence) + a bounded re-arm. See hang-max-extensions:
-          #     the bound is what keeps a 20-min cap from becoming an unbounded hang.
-          #   no kernel child, OR zero CPU delta across both samples -> the v1.3.36
-          #     path VERBATIM: ::error::HANG-DETECTED -> forensics -> docker kill ->
-          #     exit 137. Message shape and exit code are an encoded contract.
-          #   process table vanished during the probe and the container is no longer
-          #     running -> ::notice::HANG-WATCHDOG-STOOD-DOWN, no kill, no false error.
-          # Every new outcome uses a NEW marker; HANG-DETECTED is never modified.
-          # hang-detection-minutes=0 still disables the whole block: the guard below
-          # is byte-identical, so the 35 wrappers that never set it are unaffected.
-          # >>> WATCHDOG-BEGIN — extracted verbatim by scripts/test-hang-watchdog.sh;
-          #     do not reflow the sentinels or change the block's variable surface.
-          HANG_MIN="${{ inputs.hang-detection-minutes }}"
-          HANG_MODE="${{ inputs.hang-action }}"
-          HANG_EXT_MAX="${{ inputs.hang-max-extensions }}"
-          case "$HANG_MODE" in
-            kill|report-only) ;;
-            *)
-              echo "::warning::HANG-WATCHDOG-CONFIG: unknown hang-action '$HANG_MODE' — falling back to 'kill' (the v1.3.36 contract)"
-              HANG_MODE="kill"
-              ;;
-          esac
-          case "$HANG_EXT_MAX" in
-            ''|*[!0-9]*)
-              echo "::warning::HANG-WATCHDOG-CONFIG: hang-max-extensions '$HANG_EXT_MAX' is not a non-negative integer — using 3"
-              HANG_EXT_MAX=3
-              ;;
-          esac
-          # Tunables. `: "${V:=d}"` (not a plain assignment) is deliberate: it is the
-          # seam scripts/test-hang-watchdog.sh uses to fast-forward the sidecar, and it
-          # costs nothing on the runner. Values in seconds.
-          : "${WATCHDOG_POLL_SECS:=30}"
-          : "${WATCHDOG_PROBE_SECS:=60}"
-          : "${WATCHDOG_EXTEND_SECS:=300}"
-          : "${PROC_ROOT:=/proc}"
-          WATCHDOG_PID=""
-          if [ -n "$HANG_MIN" ] && [ "$HANG_MIN" != "0" ]; then
-            echo ">> Hang watchdog armed: ${HANG_MIN}-min inactivity cap (container: $RENDER_CONTAINER)"
-            echo ">> Liveness corroboration ON: probe ${WATCHDOG_PROBE_SECS}s x2, extend ${WATCHDOG_EXTEND_SECS}s, max ${HANG_EXT_MAX} extensions (worst-case cap $(( HANG_MIN + (HANG_EXT_MAX * WATCHDOG_EXTEND_SECS / 60) )) min), action=${HANG_MODE}"
-            (
-              set +e
-              LIMIT=$(( HANG_MIN * 60 ))
-              FORENSICS_DIR="$GITHUB_WORKSPACE/hang-forensics"
-              mkdir -p "$FORENSICS_DIR"
-              DEADLINE=$(( $(date +%s) + LIMIT ))
-              EXTEND_UNTIL=0
-              EXT=0
-              # wd_procs -> "<hostpid>\t<cpu>\t<cmd>" per container process, cpu in
-              # hundredths of a second from the ps TIME column (the floor reading;
-              # wd_cpu_ticks overrides it with finer /proc ticks when available).
-              # Plain `docker top` (no -o/--format) is used on purpose: `-o` is not a
-              # docker-top option and would be forwarded to ps inconsistently. The
-              # default ps -ef layout is UID PID PPID C STIME TTY TIME CMD, so $2 is
-              # the HOST pid and $7 the cumulative CPU time.
-              wd_procs() {
-                docker top "$RENDER_CONTAINER" 2>/dev/null | awk '
-                  NR == 1 { next }
-                  NF >= 8 {
-                    pid = $2; tm = $7; cmd = $8
-                    for (i = 9; i <= NF; i++) cmd = cmd " " $i
-                    n = split(tm, a, ":"); sec = 0
-                    for (j = 1; j <= n; j++) sec = sec * 60 + (a[j] + 0)
-                    printf "%s\t%d\t%s\n", pid, sec * 100, cmd
-                  }'
-              }
-              # wd_cpu_ticks <pid> -> utime+stime clock ticks from /proc, or exit != 0.
-              # Fields 1-2 (pid, comm) are stripped with ${s##*) } because comm may
-              # contain spaces; utime/stime are then the 12th/13th remaining tokens.
-              # A mismatched CONFIG_HZ only rescales the delta — the corroborator tests
-              # the SIGN of the delta, never its magnitude, so it stays correct.
-              wd_cpu_ticks() {
-                local raw
-                [ -r "$PROC_ROOT/$1/stat" ] || return 1
-                raw=$(cat "$PROC_ROOT/$1/stat" 2>/dev/null) || return 1
-                raw="${raw##*) }"
-                awk -v s="$raw" 'BEGIN {
-                  n = split(s, f, /[ \t]+/)
-                  if (n < 13) exit 1
-                  t = f[12] + f[13]
-                  if (t !~ /^[0-9]+$/) exit 1
-                  print t
-                }'
-              }
-              # wd_snapshot -> "<total_cpu>|<kernel_pid>|<kernel_cpu>", empty (status 1)
-              # when the container exposes no process table at all (already gone, or
-              # `docker top` unusable). That is deliberately NOT read as "dead": the
-              # caller re-checks with wd_running before suppressing the report, and the
-              # pre-v1.3.37 kill semantics stay reachable — fail-toward-today, never
-              # fail-open into an unbounded run.
-              wd_snapshot() {
-                local procs pid cpu cmd total kpid kcpu ticks
-                procs=$(wd_procs)
-                [ -n "$procs" ] || return 1
-                total=0; kpid=""; kcpu=0
-                while IFS=$'\t' read -r pid cpu cmd; do
-                  [ -n "$pid" ] || continue
-                  ticks=$(wd_cpu_ticks "$pid") && cpu="$ticks"
-                  total=$(( total + cpu ))
-                  # Kernel-child patterns for the engines this fleet renders with
-                  # (python3/ipykernel, R/IRkernel, julia/IJulia, java jshell,
-                  # JS/deno kernel). DEV-EXP hung on a python3 kernel.
-                  case "$cmd" in
-                    *ipykernel*|*jupyter*|*IRkernel*|*IJulia*|*xeus*|*jshell*|*kernel.js*)
-                      kpid="$pid"; kcpu=$(( kcpu + cpu )) ;;
-                  esac
-                done <<< "$procs"
-                echo "$total|$kpid|$kcpu"
-              }
-              wd_running() {
-                [ "$(docker inspect --format '{{.State.Running}}' "$RENDER_CONTAINER" 2>/dev/null)" = "true" ]
-              }
-              while true; do
-                sleep "$WATCHDOG_POLL_SECS"
-                NOW=$(date +%s)
-                LOG_MTIME=0
-                for f in "$RENDER_LOG" "$GITHUB_WORKSPACE/quarto-exec.log"; do
-                  [ -e "$f" ] || continue
-                  M=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
-                  [ "$M" -gt "$LOG_MTIME" ] && LOG_MTIME=$M
-                done
-                if [ "$LOG_MTIME" -eq 0 ]; then
-                  DEADLINE=$(( NOW + LIMIT ))  # no log yet: keep resetting (pull/startup grace)
-                  continue
-                fi
-                DEADLINE=$(( LOG_MTIME + LIMIT ))
-                [ "$NOW" -le "$DEADLINE" ] && continue
-                # Granted liveness extension still in force: stay quiet.
-                [ "$NOW" -le "$EXTEND_UNTIL" ] && continue
-                SILENT_MIN=$(( (NOW - LOG_MTIME) / 60 ))
-                PAGE=$(sed 's/\x1b\[[0-9;]*m//g' "$RENDER_LOG" 2>/dev/null | grep -oE '\[[0-9]+/[0-9]+\]' | tail -1)
-                [ -n "$PAGE" ] || PAGE="unknown"
-                # ---- v1.3.37: corroborate BEFORE deciding --------------------------
-                LIVE=0; LIVE_PID=""; LIVE_DELTA=0; HAVE_TABLE=1
-                S1=$(wd_snapshot)
-                S2=""
-                if [ -n "$S1" ]; then
-                  sleep "$WATCHDOG_PROBE_SECS"
-                  S2=$(wd_snapshot)
-                fi
-                if [ -z "$S1" ] || [ -z "$S2" ]; then
-                  HAVE_TABLE=0
-                else
-                  # Snapshot fields: 1=container-wide CPU, 2=kernel host PID,
-                  # 3=kernel-child CPU (all in hundredths-of-a-second units when
-                  # /proc is unreadable, native clock ticks when it is readable).
-                  IFS='|' read -r -a SN1 <<< "$S1"
-                  IFS='|' read -r -a SN2 <<< "$S2"
-                  D_ALL=$(( ${SN2[0]:-0} - ${SN1[0]:-0} ))
-                  D_KERN=$(( ${SN2[2]:-0} - ${SN1[2]:-0} ))
-                  K2="${SN2[1]:-}"
-                  # Kernel child present AND CPU accumulating (kernel-scoped delta,
-                  # or container-wide progress if the kernel itself is idle while
-                  # pandoc/typesetting burns CPU). Conservative toward NOT killing.
-                  if [ -n "$K2" ] && { [ "$D_KERN" -gt 0 ] || [ "$D_ALL" -gt 0 ]; }; then
-                    LIVE=1
-                    LIVE_PID="$K2"
-                    if [ "$D_KERN" -gt 0 ]; then LIVE_DELTA="$D_KERN"; else LIVE_DELTA="$D_ALL"; fi
-                  fi
-                fi
-                if [ "$LIVE" -eq 1 ] && [ "$EXT" -lt "$HANG_EXT_MAX" ]; then
-                  EXT=$(( EXT + 1 ))
-                  EXTEND_UNTIL=$(( $(date +%s) + WATCHDOG_EXTEND_SECS ))
-                  echo "::warning::LIVE-KERNEL-CORROBORATED pid=$LIVE_PID cpu-delta=$LIVE_DELTA silence=${SILENT_MIN}min page=${PAGE} — not killing; extension ${EXT}/${HANG_EXT_MAX} granted (+${WATCHDOG_EXTEND_SECS}s)"
-                  continue
-                fi
-                if [ "$LIVE" -eq 1 ]; then
-                  echo "::warning::LIVE-KERNEL-EXTENSIONS-EXHAUSTED after ${EXT} extension(s) (bound hang-max-extensions=${HANG_EXT_MAX}); proceeding to the documented kill path at page ${PAGE}"
-                fi
-                if [ "$HAVE_TABLE" -eq 0 ] && ! wd_running; then
-                  # The render finished (or died) on its own during the probe window.
-                  # Killing a gone container is a no-op, but raising HANG-DETECTED for a
-                  # render that actually completed would be a false error — stay quiet.
-                  echo "::notice::HANG-WATCHDOG-STOOD-DOWN: no process table and container not running after ${SILENT_MIN} min inactivity at page ${PAGE} — no kill issued"
-                  break
-                fi
-                echo "::error::HANG-DETECTED after ${SILENT_MIN} min inactivity at page ${PAGE}"
-                {  # forensics BEFORE kill
-                  echo "=== hang-forensics $(date -Is): ${SILENT_MIN} min silent, page ${PAGE} ==="
-                  echo "=== v1.3.37 corroboration: live=$LIVE kernel-pid='${LIVE_PID:-none}' cpu-delta=${LIVE_DELTA:-n/a} container-table=$HAVE_TABLE action=$HANG_MODE extensions=$EXT/$HANG_EXT_MAX ==="
-                  echo '--- ps -ef (quarto|docker|jupyter) ---'
-                  ps -ef | grep -E 'quarto|docker|jupyter' | grep -v grep || true
-                  echo '--- docker ps -a (label=ebpro-render=true) ---'
-                  docker ps -a --filter label=ebpro-render=true || true
-                  echo "--- docker inspect $RENDER_CONTAINER ---"
-                  docker inspect --format '{{.State.Status}} started={{.State.StartedAt}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}}' "$RENDER_CONTAINER" || true
-                  # v1.3.38: memory attribution. Container is still alive here, so the
-                  # exec arm adds its OWN cgroup view (memory.max proves the bound is
-                  # in effect, memory.current the pressure at hang time); the helper arm
-                  # snapshots the sidecar counters alongside. Non-fatal by construction.
-                  capture_oom_attribution "hang-forensics page=${PAGE}" || true
-                  echo '--- in-container process list (ps, /proc cmdline fallback) ---'
-                  docker exec "$RENDER_CONTAINER" ps -ef 2>/dev/null || docker exec "$RENDER_CONTAINER" sh -c 'for d in /proc/[0-9]*; do printf "%s " "${d#/proc/}"; tr "\0" " " < "$d/cmdline" 2>/dev/null; echo; done' 2>/dev/null || true
-                  # v1.3.32: replaced the old 'kernel log tails' probe (/tmp/*kernel*.log,
-                  # ~/.local/share/jupyter/log/*), structurally ALWAYS empty: quarto spawns
-                  # kernels via /tmp connection files without --log-file, so no kernel log
-                  # file ever exists in the render container (proven on 3 live captures).
-                  # Observed hang signature is an idle chrome-headless-shell, so capture the
-                  # headless-chromium profile dirs and singleton locks instead. 'docker logs'
-                  # was evaluated and deliberately SKIPPED as a pure content duplicate of the
-                  # tee'd RENDER_LOG (container stdio is double-sunk: client pipe + daemon
-                  # json-file; local test 2026-10-17: same lines both sides, interleaving
-                  # order only); the 'tail -n 40 $RENDER_LOG' below already covers it.
-                  echo '--- chrome profile dirs + singleton locks (in-container) ---'
-                  docker exec "$RENDER_CONTAINER" bash -lc 'ls -lad /tmp/.org.chromium.* /tmp/*hrome* 2>/dev/null; find /tmp -maxdepth 2 -name "SingletonLock" -exec ls -la {} \; 2>/dev/null' || true
-                  echo "--- tail -n 40 $RENDER_LOG ---"
-                  tail -n 40 "$RENDER_LOG" || true
-                  echo '--- ls -la _freeze .quarto ---'
-                  ls -la "$GITHUB_WORKSPACE/_freeze" "$GITHUB_WORKSPACE/.quarto" || true
-                } > "$FORENSICS_DIR/hang-report.txt" 2>&1
-                # v1.3.37 (survivability, part 1): echo the report to the sidecar's
-                # stdout so it lands in the RETAINED JOB LOG. Before this change the
-                # whole forensics block was redirected into a file and only ever
-                # APPENDED to $GITHUB_STEP_SUMMARY, so it appeared in neither the job
-                # log nor the artifact until upload — and summary_url is null for these
-                # jobs, so a quota-blocked upload made the report unrecoverable.
-                # Nothing is enlarged: same bytes, one extra transport.
-                cat "$FORENSICS_DIR/hang-report.txt" 2>/dev/null || true
-                cat "$FORENSICS_DIR/hang-report.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-                if [ "$HANG_MODE" = "report-only" ]; then
-                  echo "::warning::HANG-REPORT-ONLY page=${PAGE} silence=${SILENT_MIN}min: hang-action=report-only — docker kill SUPPRESSED, render left running; render-timeout-minutes is the remaining backstop"
-                else
-                  docker kill "$RENDER_CONTAINER" >/dev/null 2>&1 || true
-                fi
-                echo "$PAGE" > "$GITHUB_WORKSPACE/.hang-detected" 2>/dev/null || true
-                break
-              done
-            ) &
-            WATCHDOG_PID=$!
+          # v1.3.44: the watchdog unit (input validation, tunables, liveness
+          # corroboration, forensics, kill/re-arm — full design history in
+          # scripts/render-sidecar.sh) moved VERBATIM to that sidecar. The
+          # three expression tokens it carried (the hang-* inputs) are
+          # hoisted to this step's env: mapping as HANG_MINUTES / HANG_ACTION
+          # / HANG_EXT_MAX. Sourcing is FAIL-CLOSED: a missing sidecar
+          # aborts the render step — never a silent skip of the watchdog.
+          RENDER_SIDECAR="$GITHUB_WORKSPACE/_quarto-utils/scripts/render-sidecar.sh"
+          if [ ! -f "$RENDER_SIDECAR" ]; then
+            echo "::error::render-sidecar.sh not found in the utils checkout ($RENDER_SIDECAR) — the post-v1.3.44 sidecar is required; bump inputs.utils-ref to a ref carrying scripts/render-sidecar.sh"
+            exit 1
           fi
-          # <<< WATCHDOG-END
+          . "$RENDER_SIDECAR"
           for p in "${PROFILE_LIST[@]}"; do
             echo "Rendering profile: $p"
             # v1.3.37-proposal: régénère la couche locale pour CE profil (rm
@@ -1341,8 +1084,12 @@ jobs:
           fi
 
       - name: Package rendered output
+        # post-v1.3.44 (expression-cap fix): the two ${{ }} tokens hoisted to
+        # env (GITHUB_WORKSPACE is a runner default, no mapping needed).
+        env:
+          OUTPUT_PATH: ${{ inputs.output-path }}
         run: |
-          OUT_DIR="${{ github.workspace }}/${{ inputs.output-path }}"
+          OUT_DIR="$GITHUB_WORKSPACE/$OUTPUT_PATH"
           if [ ! -d "$OUT_DIR" ]; then
             echo "::error::Output dir not found: $OUT_DIR — render produced nothing; refusing to deploy an empty site"
             exit 1
@@ -1356,13 +1103,13 @@ jobs:
           cd "$OUT_DIR"
           python3 -c "
           import zipfile, os
-          zf = zipfile.ZipFile('${{ github.workspace }}/site-zip.zip', 'w', zipfile.ZIP_DEFLATED)
+          zf = zipfile.ZipFile('$GITHUB_WORKSPACE/site-zip.zip', 'w', zipfile.ZIP_DEFLATED)
           for root, dirs, files in os.walk('.'):
               for f in files:
                   p = os.path.join(root, f)
                   zf.write(p)
           zf.close()
-          print(f'Created zip: {os.path.getsize(\"${{ github.workspace }}/site-zip.zip\")} bytes')
+          print(f'Created zip: {os.path.getsize(\"$GITHUB_WORKSPACE/site-zip.zip\")} bytes')
           "
 
       - name: Guard staging path
@@ -2716,11 +2463,14 @@ jobs:
         # the retention floor still applies. Reports (quarto-exec-log,
         # visual-check-report) are NOT website artifacts — untouched by design.
         if: always() && steps.rsync-deploy.outcome == 'success' && needs.render.outputs.site-artifact-id != ''
+        # post-v1.3.44 (expression-cap fix): the two ${{ }} tokens hoisted to env.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SITE_ARTIFACT_ID: ${{ needs.render.outputs.site-artifact-id }}
         run: |
-          gh api -X DELETE "/repos/${{ github.repository }}/actions/artifacts/${{ needs.render.outputs.site-artifact-id }}" \
-            && echo "✅ site-zip artifact ${{ needs.render.outputs.site-artifact-id }} purged after successful deploy" \
+          gh api -X DELETE "/repos/$REPOSITORY/actions/artifacts/$SITE_ARTIFACT_ID" \
+            && echo "✅ site-zip artifact $SITE_ARTIFACT_ID purged after successful deploy" \
             || echo '::warning::purge failed (non-fatal) — the 1-day retention floor will reclaim the artifact'
 
   trigger-catalog:

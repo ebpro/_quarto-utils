@@ -1,6 +1,27 @@
 # TEMPLATE for consuming repos (lectures/samples/notebooks).
 # Copy this file to <your-repo>/.github/workflows/ci-render.yml.
 #
+# REPO SELF-TEST COPY (load-bearing — do not "tidy" without reading):
+#   The `uses:` below is a LOCAL PATH on purpose. A tag-pinned
+#   `uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@<tag>`
+#   makes GitHub parse the TAG's file, so consumer runs of the tag parse
+#   fine while the develop copy breaks — that is exactly the blind spot
+#   behind the v1.3.41…v1.3.44 "Exceeded max expression length 21000"
+#   incidents (the self-test pinned @v1.3.38 while develop had grown past
+#   the cap). With a local path, GitHub parses THIS repo's current branch
+#   file at run creation: a created/queued `render` job PROVES the file
+#   parses; a 0-job startup_failure with the expression error is the
+#   regression signal. `utils-ref: ${{ github.sha }}` (not a branch name)
+#   because the render step now fail-closed-sources
+#   scripts/render-sidecar.sh from the utils checkout — the checkout must
+#   carry the sidecar, and github.sha is the exact commit under test
+#   (push: the pushed commit; pull_request: the PR merge commit; both
+#   exist in this repo).
+#   CONSUMERS: when copying this template, restore the repo-qualified
+#   `uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@<tag>`
+#   and a pinned `utils-ref: <same tag>` — a local path only makes sense
+#   in this repo, and a tag pin is what a consumer's fleet should track.
+#
 # Deployment model:
 #   push to main     → GitHub Pages (stable)
 #   push to develop  → Cloudflare Pages preview (branch: develop)
@@ -23,10 +44,15 @@ on:
 
 jobs:
   render:
-    uses: ebpro/_quarto-utils/.github/workflows/render-quarto.yml@v1.3.38
+    # LOCAL PATH = the parse gate (see header): parsing this branch's
+    # render-quarto.yml is what the run's job creation proves.
+    uses: ./.github/workflows/render-quarto.yml
     secrets: inherit
     with:
-      utils-ref: v1.3.38
+      # Exact commit under test (push: pushed commit; PR: merge commit) —
+      # must carry scripts/render-sidecar.sh, which the render step
+      # fail-closed-sources from this checkout.
+      utils-ref: ${{ github.sha }}
       # Staging transport: the site-zip artifact upload leaves the push+PR path
       # entirely (quota-immune) and deploy-static pulls from teaching-staging on
       # the server — the self-test finally exercises the deploy-static leg.
