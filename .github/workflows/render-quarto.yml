@@ -465,7 +465,6 @@ jobs:
               || echo "oom-attribution: self-cgroup not readable (container already gone)"
             OOM_SIDECAR_HELPER="_quarto-utils/.github/scripts/oom-attribution-sidecar.sh"
             OOM_SIDECAR_HELPER="$GITHUB_WORKSPACE/_quarto-utils/.github/scripts/oom-attribution-sidecar.sh"
-            if [ -f "$OOM_SIDECAR_HELPER" ]; then bash "$OOM_SIDECAR_HELPER" "$QUARTO_IMAGE"; fi
             return 0
           }
           # <<< OOM-CAPTURE-END
