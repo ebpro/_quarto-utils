@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 #
 # test-hang-watchdog.sh — behavioural harness for the v1.3.37 hang-watchdog
-# liveness corroborator and the v1.3.38 OOM self-attribution unit inside
-# .github/workflows/render-quarto.yml.
+# liveness corroborator and the v1.3.38 OOM self-attribution unit. Since
+# post-v1.3.44 the units live in scripts/render-sidecar.sh (sourced by the
+# "Render with Quarto (Docker)" step of .github/workflows/render-quarto.yml).
 #
 # WHAT IT DOES
-#   Extracts the sidecar block verbatim between the
+#   Extracts the sidecar block verbatim from scripts/render-sidecar.sh between
+#   the
 #     # >>> WATCHDOG-BEGIN / # <<< WATCHDOG-END
 #   sentinels (the END sentinel sits AFTER the guard's `fi`, so the extracted
 #   unit includes the `hang-detection-minutes != 0` disabled-guard and case (d)
-#   can exercise it). The three `${{ inputs.* }}` tokens are rewritten to
-#   harness variables, then the block is sourced under bash with a fake `docker`
-#   function in scope. Every tunable the block reads through `: "${V:=d}"`
+#   can exercise it). Since post-v1.3.44 the unit is expression-free: the
+#   three hang-* inputs arrive as the step env vars HANG_MINUTES / HANG_ACTION
+#   / HANG_EXT_MAX (hoisted out of the run-block for the 21000-char expression
+#   cap), which run_case exports per case from CASE_*. The block is sourced
+#   under bash with a fake `docker` function in scope. Every tunable the block
+#   reads through `: "${V:=d}"`
 #   (WATCHDOG_POLL_SECS, WATCHDOG_PROBE_SECS, WATCHDOG_EXTEND_SECS, PROC_ROOT)
 #   is set from the environment, so the sidecar can be fast-forwarded to a
 #   decision in a few wall-clock seconds instead of minutes.
@@ -38,7 +43,7 @@
 #   "command not found" + `|| true` and still print green. The [pre] non-empty
 #   assertions on both extractions close that silent-degradation hole: a renamed
 #   sentinel FAILS the run instead of hollowing it.
-#   SENTINEL ANCHORING: workflow YAML comments/descriptions contain bare
+#   SENTINEL ANCHORING: the scanned file's comments/descriptions contain bare
 #   sentinel-name strings; the extractions therefore anchor on the full
 #   "# >>>" / "# <<<" comment form, never the bare name.
 #
@@ -167,15 +172,23 @@ docker() {
 }
 
 # ---------------------------------------------------------------------------
-# Extract + substitute the sidecar block once, then verify it still parses.
+# Extract the sidecar units once, then verify they still parse.
+# Since post-v1.3.44 the units live in scripts/render-sidecar.sh (a pure move
+# out of the render run-block for the 21000-char expression cap) and are
+# expression-free: the hang-* inputs arrive as the step env vars
+# HANG_MINUTES / HANG_ACTION / HANG_EXT_MAX, so the old sed substitution is
+# gone — run_case exports those vars from CASE_* before sourcing.
 # ---------------------------------------------------------------------------
+SIDECAR="$REPO_ROOT/scripts/render-sidecar.sh"
+if [ ! -f "$SIDECAR" ]; then
+  echo "FATAL: cannot locate sidecar at $SIDECAR" >&2
+  exit 1
+fi
+
 WD_ONLY="$TMP/watchdog-only.sh"
 awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
   index($0,b){f=1;next} index($0,e){f=0} f
-' "$WORKFLOW" \
-| sed -e 's/${{ inputs.hang-detection-minutes }}/$CASE_HANG_MIN/g' \
-      -e 's/${{ inputs.hang-action }}/$CASE_HANG_MODE/g' \
-      -e 's/${{ inputs.hang-max-extensions }}/$CASE_HANG_EXT/g' > "$WD_ONLY"
+' "$SIDECAR" > "$WD_ONLY"
 
 # ---------------------------------------------------------------------------
 # v1.3.38 unit. ANCHOR ON THE FULL "# >>>"/"# <<<" COMMENT FORM (the same
@@ -186,7 +199,7 @@ awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
 OOMB_MARK='>>> OOM-CAPTURE-BEGIN'
 OOME_MARK='<<< OOM-CAPTURE-END'
 OOM_BLOCK="$TMP/oom-capture.sh"
-awk -v b="$OOMB_MARK" -v e="$OOME_MARK" 'index($0,b){f=1;next} index($0,e){f=0} f' "$WORKFLOW" > "$OOM_BLOCK"
+awk -v b="$OOMB_MARK" -v e="$OOME_MARK" 'index($0,b){f=1;next} index($0,e){f=0} f' "$SIDECAR" > "$OOM_BLOCK"
 
 # The watchdog forensics calls capture_oom_attribution; prepend the extracted
 # helper so sourcing BLOCK is self-contained. Without this the call degrades to
@@ -208,6 +221,11 @@ run_case() {
   export GITHUB_STEP_SUMMARY="$WS/summary.md"; : > "$GITHUB_STEP_SUMMARY"
   export RENDER_CONTAINER="fake-render-c"
   export RENDER_LOG="$WS/render.log"
+  # post-v1.3.44: the hang-* inputs arrive as step env vars (the sidecar is
+  # expression-free); map the case values onto the hoisted names.
+  export HANG_MINUTES="$CASE_HANG_MIN"
+  export HANG_ACTION="$CASE_HANG_MODE"
+  export HANG_EXT_MAX="$CASE_HANG_EXT"
   printf 'processing file\n[17/32] some-cell\n' > "$RENDER_LOG"
   # Backdate the log so the inactivity deadline is already blown on tick one.
   touch -t "$(date -v-200S +%Y%m%d%H%M.%S 2>/dev/null || date -d '200 seconds ago' +%Y%m%d%H%M.%S 2>/dev/null)" "$RENDER_LOG" 2>/dev/null
@@ -241,8 +259,24 @@ echo "======================================================================"
 # ---- sanity: extraction produced a parseable, token-free unit -------------
 echo "[pre] block extraction"
 if [ ! -s "$BLOCK" ]; then bad "sentinel extraction produced an empty block"; else ok "extracted $(wc -l < "$BLOCK" | tr -d ' ') lines between sentinels"; fi
-if grep -q '\${{' "$BLOCK"; then bad "leftover \${{ ... }} token in extracted block"; else ok "all \${{ inputs.* }} tokens substituted"; fi
+if grep -q '\${{' "$BLOCK"; then bad "leftover \${{ ... }} expression in extracted block (the sidecar must be expression-free)"; else ok "extracted block is expression-free (the cap invariant)"; fi
 if bash -n "$BLOCK" 2>"$TMP/parse.err"; then ok "bash -n clean on extracted block"; else bad "bash -n: $(cat "$TMP/parse.err")"; fi
+# expression-cap invariant (post-v1.3.44): no ${{ }} inside ANY run: block of
+# the workflow — a run-block that embeds expressions is measured by the
+# Actions service as ONE expression against the 21000-char cap.
+RUNBLOCK_HITS=$(awk '
+  function indent(s,  t) { t = s; sub(/^ +/, "", t); return length(s) - length(t) }
+  /^[ ]*run:[ ]*\|/ { inrun = 1; keyind = indent($0); next }
+  inrun {
+    if ($0 ~ /[^ ]/ && indent($0) <= keyind) inrun = 0
+    if (inrun && index($0, "${{")) print NR
+  }
+' "$WORKFLOW")
+if [ -n "$RUNBLOCK_HITS" ]; then
+  bad "run-block(s) still embed \${{ }} at line(s): $(printf '%s' "$RUNBLOCK_HITS" | tr '\n' ' ')"
+else
+  ok "no \${{ }} inside any run: block of render-quarto.yml (expression-cap invariant)"
+fi
 # the disabled-guard must be INSIDE the extracted unit (END sentinel after fi)
 # shellcheck disable=SC2016
 if grep -qF 'if [ -n "$HANG_MIN" ] && [ "$HANG_MIN" != "0" ]; then' "$BLOCK"; then
