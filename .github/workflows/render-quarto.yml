@@ -463,7 +463,10 @@ jobs:
               || echo "oom-attribution: docker inspect failed (container auto-deleted by --rm, or daemon unreachable)"
             docker exec "$RENDER_CONTAINER" sh -c 'for f in memory.max memory.current memory.events memory.events.local memory.peak; do echo "--- self-cgroup $f ---"; cat "/sys/fs/cgroup/$f" 2>/dev/null || echo "(absent)"; done' 2>/dev/null \
               || echo "oom-attribution: self-cgroup not readable (container already gone)"
-            docker run --rm "$QUARTO_IMAGE" sh -c 'echo sidecar-cgroup' 2>/dev/null || echo "oom-attribution: sidecar-cgroup helper failed (cgroupns flag/daemon/mount unsupported)"
+            CGROUP_MOUNT_SRC=/sys/fs/cgroup
+            CGROUP_MOUNT_DST=/hostcg
+            CGROUP_MOUNT_ARG="-v ${CGROUP_MOUNT_SRC}:${CGROUP_MOUNT_DST}:ro"
+            docker run --rm --cgroupns=host $CGROUP_MOUNT_ARG "$QUARTO_IMAGE" sh -c 'echo sidecar-cgroup' 2>/dev/null || echo "oom-attribution: sidecar-cgroup helper failed (cgroupns flag/daemon/mount unsupported)"
             return 0
           }
           # <<< OOM-CAPTURE-END
