@@ -657,6 +657,19 @@ jobs:
           HANG_MIN="${{ inputs.hang-detection-minutes }}"
           HANG_MODE="${{ inputs.hang-action }}"
           HANG_EXT_MAX="${{ inputs.hang-max-extensions }}"
+          case "$HANG_MODE" in
+            kill|report-only) ;;
+            *)
+              echo "::warning::HANG-WATCHDOG-CONFIG: unknown hang-action '$HANG_MODE' — falling back to 'kill' (the v1.3.36 contract)"
+              HANG_MODE="kill"
+              ;;
+          esac
+          case "$HANG_EXT_MAX" in
+            ''|*[!0-9]*)
+              echo "::warning::HANG-WATCHDOG-CONFIG: hang-max-extensions '$HANG_EXT_MAX' is not a non-negative integer — using 3"
+              HANG_EXT_MAX=3
+              ;;
+          esac
           WATCHDOG_PID=""
           if [ -n "$HANG_MIN" ] && [ "$HANG_MIN" != "0" ]; then
             echo ">> Hang watchdog armed: ${HANG_MIN}-min inactivity cap (container: $RENDER_CONTAINER)"
