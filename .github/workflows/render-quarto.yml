@@ -459,6 +459,8 @@ jobs:
           #     (case i: every arm must be non-fatal); do not reflow the sentinels.
           capture_oom_attribution() {
             echo "=== oom-attribution ${1:-death} $(date -Is 2>/dev/null || date) ==="
+            docker inspect -f 'OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} OOMKilledAt={{.State.FinishedAt}}' "$RENDER_CONTAINER" 2>/dev/null \
+              || echo "oom-attribution: docker inspect failed (container auto-deleted by --rm, or daemon unreachable)"
             return 0
           }
           # <<< OOM-CAPTURE-END
