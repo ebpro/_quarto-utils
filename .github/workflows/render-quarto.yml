@@ -464,7 +464,8 @@ jobs:
             docker exec "$RENDER_CONTAINER" sh -c 'for f in memory.max memory.current memory.events memory.events.local memory.peak; do echo "--- self-cgroup $f ---"; cat "/sys/fs/cgroup/$f" 2>/dev/null || echo "(absent)"; done' 2>/dev/null \
               || echo "oom-attribution: self-cgroup not readable (container already gone)"
             OOM_SIDECAR_HELPER="_quarto-utils/.github/scripts/oom-attribution-sidecar.sh"
-            OOM_SIDECAR_HELPER="$GITHUB_WORKSPACE/_quarto-utils/.github/scripts/oom-attribution-sidecar.sh"
+            OOM_SIDECAR_HELPER="$(pwd)/_quarto-utils/.github/scripts/oom-attribution-sidecar.sh"
+            if [ -f "$OOM_SIDECAR_HELPER" ]; then bash "$OOM_SIDECAR_HELPER" "$QUARTO_IMAGE"; fi
             return 0
           }
           # <<< OOM-CAPTURE-END
