@@ -655,6 +655,8 @@ jobs:
           # step-status decider (subshell runs `set +e`, every probe `|| true`; the
           # guarded if keeps the main `bash -e` shell inert when the feature is off).
           HANG_MIN="${{ inputs.hang-detection-minutes }}"
+          HANG_MODE="${{ inputs.hang-action }}"
+          HANG_EXT_MAX="${{ inputs.hang-max-extensions }}"
           WATCHDOG_PID=""
           if [ -n "$HANG_MIN" ] && [ "$HANG_MIN" != "0" ]; then
             echo ">> Hang watchdog armed: ${HANG_MIN}-min inactivity cap (container: $RENDER_CONTAINER)"
