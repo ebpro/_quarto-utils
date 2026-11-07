@@ -83,6 +83,31 @@ Fait date autorise ici uniquement ; la clause 5 de TEACHING-FLEET.md s'arrete a 
 - La voie prescrite reste l'etape separee, mais pour la bonne raison : preservation de la marge du bloc liant, et immunite contre le cas `exit 0` ci-dessus, pas parce que la voie inline serait mortelle par construction.
 - Aucune de ces mesures ne provient d'une execution de la CI : elles sont toutes reproductibles sur le poste. Ce que la CI seule peut trancher - le comportement reel du moteur de preparation sur une forme inline - reste **non teste cote serveur**, et exige un go-ahead de poussee (ADR-04).
 
+### Poussee executee (2026-11-07, correction en avant des enonces « local, non pousse »)
+
+- Go-ahead humain nomme « Teaching + _quarto-utils », consomme par cette seule poussee (ADR-04).
+  `git push origin develop`, sortie verbatim `35fa783..46231cf  develop -> develop`, sans `--force`,
+  sans `-u`, sans `--tags`. Double lecture serveur concordante : `git ls-remote origin refs/heads/develop`
+  et `gh api /repos/ebpro/_quarto-utils/git/ref/heads/develop --jq .object.sha` donnent tous deux
+  `46231cf752f7a280e57237700e1767cbfed14c2e`. Avance 0, retard 0, arbre propre apres la poussee.
+- Ce que les paragraphes « Etat rendu » et « Regles d'ecriture » enoncaient comme local et en attente est
+  donc **publie** sur `develop`. Ces lignes ne sont pas reecrites : le present paragraphe les borne par sa
+  date. La branche locale `develop-canonical` reste hors distante, relue apres la poussee : la recherche
+  `git ls-remote --heads origin develop-canonical` repond vide.
+- Consequence attendue, consignee sans etre interpretee. La poussee declare le declenchement `push` sur
+  `develop` du wrapper local, donc l'auto-test s'execute avec `utils-ref: github.sha` : c'est bien le
+  contenu du commit engage qui tourne, et `deploy-static: true` redéploie le site d'auto-test de la
+  bibliotheque. Run observe a l'ecriture de cette ligne : `42388650033`, nom `CI Render`, `event: push`,
+  `head_sha` egal a la tip poussee, `status: in_progress`, `conclusion: null`. Le run precedent sur cette
+  branche, `42364891251`, est `completed/success` : contexte, pas prediction. Verdict a lire au niveau
+  job, jamais au niveau run.
+- Relues a l'ecriture de cette ligne, deux choses n'ont **pas** bouge : le tag de release le plus recent
+  sur la distante est toujours `v1.3.45` et `refs/tags/v1.3.46` repond vide ; aucun epinglement de flotte
+  n'a ete modifie (gel ADR-05 en vigueur).
+- Regle operationnelle pour la prochaine main : tant que `42388650033` n'est pas `completed`, aucune
+  nouvelle poussee sur `develop` (cette correction de ledger en est une, donc elle attend la fin du run
+  et un go-ahead nomme).
+
 ### Missions ouvertes
 
 - Fin de vie du travail d'index de cours, HORS perimetre de cette vague : decider puis executer l'engagement de `71ac0fb` sur `develop`, son eventuel tag, son adoption par un canary consommateur, dans cet ordre et avec temoin de rendu vert lu au niveau job avant tout tag.
