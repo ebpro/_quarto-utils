@@ -3,15 +3,15 @@
 ## Role
 
 - Seule brique de config partagee de la flotte d'enseignement : profils de rendu, themes, filtres, extensions, workflows reutilisables, gabarits de devcontainer. Un seul depot remplit ce role ; les cours ne dupliquent rien.
-- Il est consomme par deux mecaniques distinctes : sous-module gingle par un commit dans chaque assemblage, et workflow reutilisable appele par les wrappers de rendu. Une modification peut etre vivante dans l'une et pas dans l'autre : les deux se verifient cote serveur.
+- Il est consomme par deux mecaniques distinctes : sous-module epingle par un commit dans chaque assemblage, et workflow reutilisable appele par les wrappers de rendu. Une modification peut etre vivante dans l'une et pas dans l'autre : les deux se verifient cote serveur.
 - Le decoupage des fichiers de profil par defaut est partage : les cours pointent dessus par liens symboliques. Un cours ne materialise pas une copie de ces fichiers pour corriger un detail local.
 
 ## Regles de modification partagee
 
-- Une modifcation partagee part d'une branche, est prouvee chez au moins un consommateur (rendu vert avec l'etage de publication execute, lu au niveau job), et seulement alors devient une version consommee. Un tag sans temoin consommateur n'est pas une version livree.
+- Une modification partagee part d'une branche, est prouvee chez au moins un consommateur (rendu vert avec l'etage de publication execute, lu au niveau job), et seulement alors devient une version consommee. Un tag sans temoin consommateur n'est pas une version livree.
 - Retirer ou renommer un input du workflow reutilisable sans vague couplee produit une panne de preparation du job, sans log ni annotation chez les consommateurs : l'absence de job n'est pas un succes.
 - Les grands blocs de commande des workflows reutilisables ont une contrainte de longueur structurelle, imposee par le moteur d'orchestration et non par le gout : une garde, une condition supplementaire, ou un appel se place dans sa PROPRE etape, jamais dans un bloc deja volumineux. Le comptage se fait sur le fichier, pas de memoire.
-- Un input dont la valeur par defaut ne publie pas est un piege de silance : la ligne de garde de publication doit etre verifiee dans tout wrapper que l'on touche.
+- Un input dont la valeur par defaut ne publie pas est un piege de faux vert : la ligne de garde de publication doit etre verifiee dans tout wrapper que l'on touche.
 
 ## Validation avant "fait"
 
@@ -64,16 +64,17 @@ Fait date autorise ici uniquement ; la clause 5 de TEACHING-FLEET.md s'arrete a 
 ### Missions ouvertes
 
 - Fin de vie du travail d'index de cours, HORS perimetre de cette vague : decider puis executer l'engagement de `71ac0fb` sur `develop`, son eventuel tag, son adoption par un canary consommateur, dans cet ordre et avec temoin de rendu vert lu au niveau job avant tout tag.
-- Porte-par-ce-commit, non verifie par cette vague, enumere par le journal : gate de drift `--check` engage dans la CI (le script l'offre, aucun appel ne le lance), P2 du generateur (appel redondant, evaluation d'un identifiant dans une fonction d'echec, commentaire perime), disposition de l'action `.github/actions/lecture-index/action.yml` que rien n'appelle, disposition de `scripts/__pycache__/`.
+- Ce qui reste porte par ce commit, non verifie par cette vague, enumere par le journal : gate de drift `--check` engage dans la CI (le script l'offre, aucun appel ne le lance), P2 du generateur (appel redondant, evaluation d'un identifiant dans une fonction d'echec, commentaire perime), disposition de l'action `.github/actions/lecture-index/action.yml` que rien n'appelle, disposition de `scripts/__pycache__/`.
 - Defaut d'hygiene mesure : le depot n'a aucune regle ignorant `__pycache__` ni la zone `.github/actions/` ; `git check-ignore` repond hors regle pour les deux. Un add aveugle les engagerait. Regle operative : jamais d'add global dans ce clone, uniquement des chemins explicites.
-- Amendement a rendre a la Validation 5 de `TEACHING-FLEET.md` pour exclure la zone ledger definie par ADR-17 : sans lui, tout depot conforme rougit sa propre validation. Le fichier de flotte est partage ; son lieu de versionnement est lui-meme un point du registre de decisions.
+- Amendement a rendre a la Validation 5 de `TEACHING-FLEET.md` pour exclure la zone ledger definie par ADR-17 : sans lui, tout depot conforme rougit sa propre validation.
+- Fait de gouvernance mesure le 2026-11-07 : `teaching-repos/TEACHING-FLEET.md` n'est versionne dans AUCUN depot du decoupage. La racine `teaching-repos/` n'est pas un depot git, et la recherche par `ls-files` repond vide dans les seize clones. Le seul fichier d'autorite flotte n'a donc ni historique, ni diff, ni revue : son amendement doit passer par une copie consignee, et sa mise en version est une decision du registre.
 - Cette vague ne re-declenche aucune CI, ne bump aucun epinglement, ne cree aucun tag.
 
 ### Decisions humaines en attente
 
 - Creer ou non une version `v1.3.46` et lancer une vague d'epinglage de flotte : decision explicite, individuelle, et hors de cette vague (gel ADR-05 en vigueur jusqu'a ordre contraire).
-- Sortie du clone endommage sous repertoire temporaire : reparer, abandonner, ou considerer la preservation close par le bundle. Rien n'est repare ici.
-- Disposition du repertoire de fumee leftover cite par le journal (`li-smoke` sous le repertoire temporaire utilisateur).
+- Sortie du clone detruit sous repertoire temporaire : reparer, abandonner, ou considerer la preservation close par le bundle. Rien n'est repare ici.
+- Repertoire d'essai de fumee cite par le journal (sous `li-smoke` dans le repertoire temporaire utilisateur) : la mesure du 2026-11-07 constate qu'il n'existe plus. Ce n'est plus un reste ; le journal doit le considerer clos, pas le recreer.
 - Poussee du present commit : go-ahead humain individuel (ADR-04).
 
 ### Non negociables propres au depot
