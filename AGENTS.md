@@ -137,3 +137,30 @@ Fait date autorise ici uniquement ; la clause 5 de TEACHING-FLEET.md s'arrete a 
 - `teaching-repos/TEACHING-FLEET.md` : regles de flotte et faits techniques stables, seule autorite.
 - `Teaching/AGENTS.md` : journal d'audit, etat transverse date, preuves de bundle et de sonde, registres de decisions.
 - Depuis ADR-16, le lieu durable du contexte de session de ce depot est le present fichier.
+
+## Decision v1.3.46 (2026-11-07, refus)
+
+- **Refus**: `v1.3.46` ne sera pas pose par cette ligne de travail. Deux de nos
+  sessions ont deja consomme un cycle d'etiquette pour gagner un delta reellement
+  consomme. Ici le delta est vide. La chaine valide est: `develop` vert -> canary
+  consommateur vert -> etiquette. Nous n'avons pas le deuxieme maillon.
+- **Mesures qui fondent le refus** (collees depuis les sorties de commande):
+  - tip de `develop` = `2f78764` et son auto-test `42389338756` = 4 jobs
+    `completed/success`, donc le contenu du tag `v1.3.45` vit deja vert sur `develop`.
+  - `refs/tags/v1.3.46` est absent (`git ls-remote origin refs/tags/v1.3.46` sort
+    vide, rc 0). Maximum des etiquetes de release: `v1.3.45`.
+  - Le script `scripts/generate_lecture_index.py` est **present a la tip**
+    (`git cat-file -e HEAD:scripts/generate_lecture_index.py`, rc 0). Le `71ac0fb`
+    que le journal `Teaching/AGENTS.md` (2026-11-05, late) dit non ancetre de
+    `develop` est un **objet pendant detruit** (`git cat-file -t 71ac0fb` rc 128),
+    preserve par le bundle `refs/test-bundle/develop`. C'est ce desaccord de
+    versionnement, pas l'etiquette, qui bloque l'adoption.
+  - Le bloc `run:` liant de `render-quarto.yml` mesure **20 129** caracteres (marge
+    **871** sur le plafond de 21 000).
+- **Ouvert a un owner**: consommer l'index de cours par SHA de `develop`, ou poser une
+  etiquette. Cette section consigne une decision, pas un etat. La section
+  `Decision d'etiquette (2026-11-06, reportee)` reste la decision anterieure.
+- **Correction de provenance**: la mention de cette section dans le journal
+  `Teaching/AGENTS.md` (2026-11-07, late-34) citait un commit `18c1764` qui n'a
+  jamais existe et un etat non ecrit. Le present commit en est la premiere
+  verite; la relecture serveur est la seule preuve d'une poussee.
