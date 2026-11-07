@@ -21,26 +21,37 @@
 - Une affirmation d'un agent sur un commit, un tag ou une poussee est une hypothese jusqu'a relecture du fichier, de l'index et du serveur.
 - Aucune poussee sans go-ahead humain individuel (ADR-04).
 
-## Registre ADR (autorite, restaure 2026-11-05)
+<!-- ADR-REGISTRY:BEGIN source=Teaching/TEACHING-FLEET.md -->
+## Registre ADR
 
-- ADR-01 : un owner formel unique par projet (regle, pas un constat).
-- ADR-02 : les launch-prompts sont du contexte de session, jamais de l'etat date.
-- ADR-03 : verification serveur avant tout claim (commit, push, tag, merge, ecriture, suppression).
-- ADR-04 : go-ahead humain explicite par poussee; les approvals blanket n'autorisent aucun push.
-- ADR-05 : gel flotte `v1.3.45`.
-- ADR-06 : owner unique pour `_quarto-utils`.
-- ADR-07 : timeouts bornes sur toute commande, fail-fast sur toute atteinte non verifiee.
-- ADR-08 : une preuve durable vit dans un lieu durable (commit), pas dans un fichier non suivi.
-- ADR-09 : eligibilite scrub - fence `{.bash}` + legende « Capture de l'atelier - commandes et sortie, non executees par le rendu : » + honnetete PAR DOCUMENT (verifier `execute:` / `eval:` du document avant toute formulation).
-- ADR-10 : un `404` ne veut pas dire absent (contents API vs git tree).
-- ADR-11 : bundle avant toute mutation git.
-- ADR-12 : zsh ne decoupe pas les mots.
-- ADR-13 : le journal `Teaching/AGENTS.md` est la source unique d'etat mutable; un fichier de doctrine par repo ne porte aucun fait date.
-- ADR-14 : un projet ne publie pas son propre verdict.
+| ADR | Règle | Statut |
+|---|---|---|
+| ADR-01 | Un owner formel unique par projet. Une règle, pas un constat : tous les owners ne sont pas désignés. | actif |
+| ADR-02 | Une fiche de démarrage est du contexte de session, jamais un fait daté. | rescopé par ADR-18 : le lieu durable du contexte d'un projet est son propre `AGENTS.md` versionné ; la distribution par copie n'est plus la voie |
+| ADR-03 | Aucun énoncé d'état (commit, poussée, tag, fusion, écriture, suppression) sans relecture côté serveur ou côté dépôt. Une reconstitution qui n'exécute pas l'outil ne prouve rien. | actif |
+| ADR-04 | Go-ahead humain explicite, formulé pour cette ressource et cette action, par mutation. Une autorisation dont la charge change est périmée et s'obtient de nouveau. | actif |
+| ADR-05 | Le gel de la flotte est décidé et levé par l'humain. Sa valeur courante ne vit pas dans un fichier de doctrine : elle se lit côté serveur et au lieu d'état que nomme `TEACHING-FLEET.md`. | actif ; la valeur que ce registre portait en est retirée par ADR-18 |
+| ADR-06 | Un owner unique pour `_quarto-utils` ; les autres flux n'y touchent pas. | actif |
+| ADR-07 | Timeout borné sur toute commande, fail-fast sur toute atteinte non vérifiée. Une vérification perdue n'est jamais une vérification réussie. | actif |
+| ADR-08 | Une preuve durable a un lieu durable : un ref, un tag, un artefact versionné. Jamais un fichier temporaire, jamais un objet git non atteignable. | actif |
+| ADR-09 | Éligibilité scrub : fence `{.bash}`, légende « Capture de l'atelier - commandes et sortie, non exécutées par le rendu : », et honnêteté par document (vérifier `execute:` et `eval:` du document avant toute formulation). | actif |
+| ADR-10 | Un `404` ne veut pas dire absent : l'API de contenu et l'arbre git ne couvrent pas le même espace. | actif |
+| ADR-11 | Bundle du travail avant toute mutation git. | actif |
+| ADR-12 | zsh ne découpe pas les mots : tableaux, ou sortie délimitée et lue proprement. | actif |
+| ADR-13 | Le journal du corpus est la source unique de l'état **transverse** ; l'état d'un seul dépôt vit dans l'`AGENTS.md` de ce dépôt. | rescopé par ADR-17 |
+| ADR-14 | Un projet ne publie pas son propre verdict. | actif |
+| ADR-15 | *Aucun énoncé : cet identifiant n'a jamais été émis.* Il n'est pas remplacé, pour que les références à ADR-16 et ADR-17 restent vraies. | non émis |
+| ADR-16 | Une passe de transfert d'état n'est pas une mission de contenu : pas de leçon, pas de TP, pas de relance de CI, pas de changement d'épinglage. Un dépôt par rédacteur ; une reprise commence par une remesure fraîche. | actif |
+| ADR-17 | Un `AGENTS.md` de projet porte une zone mince sans fait daté, puis une unique section de registre de session. | modifié par ADR-18 : la borne ne se pose plus par position mais par classe de région, §11 |
+| ADR-18 | Trois classes de région, §11 : ce qui est gelé est l'information et ses ancres, pas la phrase ; la zone mince est éditoriale sous retrait nommé ; le plancher dur de la mutation est inchangé. | actif |
 
-## Invariant de verification des mounts
+## Invariant de vérification des montages
 
-Un mount = intersection entre les entrees de `.gitmodules` et les repertoines reels a la racine du repo. Le total des gitlinks renvoye par un `git ls-tree` recursif N'EST PAS un nombre de mounts. Ne jamais enoncer un nombre de mounts dans un fichier de doctrine : le mesurer a la demande.
+Un montage est l'intersection entre les entrées de `.gitmodules` et les répertoires réellement
+présents à la racine du dépôt. Le total des liens git renvoyés par un `git ls-tree` récursif **n'est
+pas** un nombre de montages. Ne jamais énoncer un nombre de montages dans un fichier de doctrine :
+le mesurer à la demande.
+<!-- ADR-REGISTRY:END -->
 
 ## Registre de session (zone ledger, hors Validation 5)
 
