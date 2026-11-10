@@ -164,3 +164,30 @@ Fait date autorise ici uniquement ; la clause 5 de TEACHING-FLEET.md s'arrete a 
   `Teaching/AGENTS.md` (2026-11-07, late-34) citait un commit `18c1764` qui n'a
   jamais existe et un etat non ecrit. Le present commit en est la premiere
   verite; la relecture serveur est la seule preuve d'une poussee.
+
+### Session 2026-11-10 - un fait de ce depot consomme silencieusement par les depots de contenu
+
+- Constat lu dans ce depot, pas inferre d'un comportement de consommateur : le fichier
+  `_quarto.yml` porte la cle `execute:` avec `echo: false`, `output: false`, `error: false`,
+  `warning: true`, `cache: true` (mesure identique a la tip de developpement et a l'etiquette
+  consomme par la flotte). Une cellule qui s'execute ne publie donc ni son code ni sa sortie sans
+  opt-in de cellule (`//| echo: true` ou `//| output: true`), et le rendu reste vert : la perte
+  est silencieuse.
+- Corollaire pour un consommateur : une page tenue en `execute.enabled: false` publie son code
+  comme du texte brut. Retirer cette cle, ou activer l'execution, change ce qui est PUBLIE et pas
+  seulement ce qui s'execute. Cote consommateur, la preuve est `notebook-java-bases`, lecon 04
+  (commit `3259c20` de son `develop`) : apres reactiveation, la page ne contenait plus que la
+  cellule qui portait l'opt-in.
+- Ce que cette entree ne fait pas : elle n'impose aucune regle aux depots de contenu, et n'ecrit
+  rien dans la documentation de ce depot. La diffusion de la clause vers les `AGENTS.md` de
+  consommateurs est une decision de chaque proprietaire de depot; la valeur de reference est ce
+  fichier-ci, lieu ou la contrainte opere.
+- Derive mesuree ce jour sur le wrapper d'auto-test de ce depot : `uses:` et `utils-ref:` y sont
+  en chemin et revision locaux (attendu pour un auto-test), mais `quarto-image` y porte une valeur
+  autre que celle que la flotte consomme. Aucun effet sur les consommateurs, chacun portant sa
+  propre cle d'image; consequence reellement mesuree : l'auto-test ne rend pas sur l'image de la
+  flotte, donc ses verdicts ne prouvent pas le comportement de cette image. Les valeurs courantes
+  se lisent dans `TEACHING-FLEET.md` et sur la distante, pas dans ce fichier.
+- Ce qui reste ouvert ici, sans acte de cette passe : la decision d'etiquette de release
+  (`tags` et `delete` poses par une session separee, par depot), l'entree de la clause
+  `echo`/`output` dans un document de ce depot, et la remise a niveau de l'image d'auto-test.
