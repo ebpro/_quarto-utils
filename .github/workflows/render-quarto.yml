@@ -433,14 +433,16 @@ jobs:
           cat _metadata.yml
 
       - name: Detect Docker socket
+        env:
+          ENABLE_DOCKER: ${{ inputs.enable-docker }}
         run: |
-          if [ -S /var/run/docker.sock ]; then
+          if [ "$ENABLE_DOCKER" = "true" ] && [ -S /var/run/docker.sock ]; then
             SOCKET_GID=$(stat -c %g /var/run/docker.sock 2>/dev/null || stat -f %g /var/run/docker.sock 2>/dev/null)
             echo "DOCKER_MOUNTS=-v /var/run/docker.sock:/var/run/docker.sock --group-add ${SOCKET_GID:-0}" >> "$GITHUB_ENV"
             echo "✅ Docker socket detected (gid=${SOCKET_GID}) — container will have Docker access"
           else
             echo "DOCKER_MOUNTS=" >> "$GITHUB_ENV"
-            echo "ℹ️ No Docker socket — rendering without Docker access"
+            echo "ℹ️ No Docker mount (enable-docker=$ENABLE_DOCKER) — rendering without Docker access"
           fi
 
       - name: Render with Quarto (Docker)
@@ -471,10 +473,10 @@ jobs:
           HANG_EXT_MAX: ${{ inputs.hang-max-extensions }}
         run: |
           RENDER_CONTAINER="quarto-render-${RUN_ID}"
-          # Extra docker-run args. The base env and the 'dind' host mapping are
-          # UNCONDITIONAL; only the docker-socket (dooD) bits are appended when
-          # enable-docker=true. With enable-docker=false the run stays free of any
-          # socket mount / DOCKER_HOST env (as before dooD existed).
+          # docker-run args. Base env and the dind mapping are UNCONDITIONAL.
+          # Post-fix: the dooD socket arrives ONLY via DOCKER_MOUNTS, which the
+          # detect step gates on enable-docker AND a host socket. The -e
+          # DOCKER_HOST below = CLI default; true arms the canary.
           DOCKER_ARGS=()
           # Unconditional: aligns gitpull.sh / get_src_dir.sh examples base path
           # so `cd` into the cloned examples works in both dooD and non-dooD renders.
