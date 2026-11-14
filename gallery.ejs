@@ -1,8 +1,5 @@
 ```{=html}
-<div class="gallery-header">
-  <input type="search" class="gallery-search" placeholder="Rechercher..." aria-label="Rechercher">
-  <span class="gallery-count" id="gallery-count"></span>
-</div>
+<% /* Invariant: la zone de recherche est injectee par le script de recherche partage, jamais emise par ce gabarit; le groupement par section vient du conteneur natif div.quarto-listing, jamais d'un identifiant ici. */ %>
 <div class="gallery-grid">
 <% for (var i = 0; i < items.length; i++) { %>
 <% var item = items[i]; %>
@@ -12,9 +9,12 @@
   <h3 class="g-card__title"><%- item.title || item.path %></h3>
   <% if (item.subtitle) { %><p class="g-card__subtitle"><%- item.subtitle %></p><% } %>
   <% if (item.description) { %><p class="g-card__desc"><%- item.description %></p><% } %>
+<% /* Limite connue de R1: une date declaree tombant a la meme seconde que le mtime est tuee. */ %>
+  <% if (item.sortableValues && item.sortableValues.date && item.sortableValues["file-modified"] && item.date && Math.floor(Number(item.sortableValues.date)/1000) !== Math.floor(Number(item.sortableValues["file-modified"])/1000)) { %>
   <div class="g-card__meta">
     <% if (item.date) { %><time><%- item.date %></time><% } %>
   </div>
+  <% } %>
   <div class="g-card__actions">
     <% if (item.provide_notes !== false) { %>
     <a href="<%= item.path.replace('.qmd', '.html') %>" class="g-btn g-btn--notes"><span>Notes</span></a>

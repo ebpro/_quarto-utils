@@ -23,11 +23,9 @@ listing:
     - "description"
     - "date"
 #    - "image"
-    - "categories"
 #    - "reading-time"
   
   # Navigation and filtering
-  categories: true
   date-format: "DD MMMM YYYY"
   
   # Custom template

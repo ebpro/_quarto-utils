@@ -1,0 +1,29 @@
+# Guard for the three copies of the gallery search script: gallery-search.js is
+# the canonical file, and _quarto-notes.yml plus _quarto-notes-en.yml each inline
+# a copy of its body inside an include-in-header block.
+# Separate file on purpose: ci-render.yml is also the template that consumers
+# copy, and scripts/check-gallery-copies.py exists only in this repo, so a job
+# calling it from that template would turn the next consumer copy red.
+name: Gallery script copies
+
+on:
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  gallery-script-copies:
+    name: Gallery script copies
+    # Label cited from .github/workflows/visual-check.yml:175 (also
+    # spike-visual-check.yml:29); not guessed.
+    runs-on: [self-hosted, linux, ebpro-org, x64]
+    # 30 cited from .github/workflows/visual-check.yml:174 (input
+    # timeout-minutes, documented default 30 at line 22); not invented.
+    timeout-minutes: 30
+    steps:
+      # @v4 cited from .github/workflows/visual-check.yml:242 and :601.
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check-gallery-copies.py
