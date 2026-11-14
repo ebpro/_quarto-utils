@@ -67,4 +67,7 @@ jobs:
       profiles: "notes,slides"
       deploy-static: ${{ github.event_name != 'pull_request' }}
       # cf-project-name: "your-repo-name"  # Optional: override auto-derived name
-      enable-docker: false
+      # Valeur lue dans le contenu du depot (les snippets _tools_Docker_* appellent le
+      # démon). Ce fichier est aussi le gabarit copié par les consommateurs : chacun
+      # doit relire cette valeur contre ses propres cellules, pas la recopier.
+      enable-docker: true
