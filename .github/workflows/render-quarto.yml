@@ -445,6 +445,42 @@ jobs:
             echo "ℹ️ No Docker mount (enable-docker=$ENABLE_DOCKER) — rendering without Docker access"
           fi
 
+      - name: Écrire le fichier de version du cartouche
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime
+          import json
+          import os
+
+          root = os.environ.get("GITHUB_WORKSPACE", ".")
+          data = {
+              "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
+              "ref": os.environ.get("GITHUB_REF", ""),
+              "ref_name": os.environ.get("GITHUB_REF_NAME", ""),
+              "ref_type": os.environ.get("GITHUB_REF_TYPE", ""),
+              "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+              "sha": os.environ.get("GITHUB_SHA", ""),
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+              "server_url": os.environ.get("GITHUB_SERVER_URL", ""),
+              "head_ref": os.environ.get("GITHUB_HEAD_REF", ""),
+              "base_ref": os.environ.get("GITHUB_BASE_REF", ""),
+              "default_branch": os.environ.get("DEFAULT_BRANCH", ""),
+              "generated_at": datetime.datetime.now(
+                  datetime.timezone.utc
+              ).isoformat().replace("+00:00", "Z"),
+          }
+          with open(os.path.join(root, "_cartouche-version.json"), "w",
+                    encoding="utf-8") as fh:
+              json.dump(data, fh, ensure_ascii=False, indent=2)
+              fh.write("\n")
+          PY
+          echo "cartouche-version ecrit"
+
       - name: Render with Quarto (Docker)
         # fromJSON() coercion guards against the caller→callee boundary
         # delivering the number input as a string ("Unexpected value '90'"
