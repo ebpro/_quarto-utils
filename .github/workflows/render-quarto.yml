@@ -2478,7 +2478,11 @@ jobs:
   trigger-catalog:
     needs: [render]
     if: success()
-    runs-on: ubuntu-latest
+    # v1.3.48: self-hosted fleet placement, same as publish-console-log and
+    # deploy-static — the job only needs curl + egress to api.github.com,
+    # both available on the ARC runners. No GitHub-hosted runner may carry
+    # fleet jobs (secrets.CATALOG_DISPATCH_TOKEN included).
+    runs-on: [self-hosted, linux, ebpro-org, x64]
     steps:
       - name: Dispatch teaching-catalog rebuild
         env:
