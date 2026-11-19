@@ -56,7 +56,7 @@ local UTILS = "_quarto-utils"
 local POLICY_DOC = "docs/politique-de-production.md"
 local POLICY_ID = "politique-de-production"
 local VERSION_FILE = "_cartouche-version.json"
-local REVID = "cartouche-20261118-final-2"
+local REVID = "cartouche-20261119-provenance-v2"
 local CC_BYNC_DEED = "https://creativecommons.org/licenses/by-nc/4.0/"
 local GH_HOSTS = { ["github.com"] = true, ["www.github.com"] = true }
 
@@ -305,26 +305,44 @@ local function submodule_entries(root)
   return list
 end
 
--- Le document siege-t-il dans un montage declare du projet rendu ? `rel` est la
--- valeur brute de `QUARTO_DOCUMENT_PATH` rapportee a `QUARTO_PROJECT_DIR`.
--- Retourne ("monte", entree) | ("non-monte", nil).
--- Fait consigne, NON branche : la revision de campagne deja portait cette fonction
--- sans aucun appel (mesure du 18 novembre : definie ici comme ailleurs, 0 appel).
--- Sa semantique — le montage courant ne couvre pas le engagement declare — est
--- exactement ce qui manque a la branche de l'assemblage. Elle est conservee telle
--- quelle, et sa mise en service est un acte distinct du proprietaire : la surface
--- signee ne publie aucune reserve, donc rien ici ne depend de son branchement.
+-- Le document siege-t-il dans un montage declare du projet rendu ? `rel` est le
+-- chemin du dossier du document, EN COORDONNEES RELATIVES A LA RACINE PASSEE, et
+-- jamais une coordonnee d'un autre systeme : c'est le changement de coordonnees qui
+-- rendait la garde d'identite du montage insatisfaisable par construction. Une
+-- entree couvre `rel` quand `rel` est le point de montage lui-meme ou un de ses
+-- descendants, au SEPARATEUR DE COMPOSANTE pres : un prefixe de chaine nu
+-- accepterait `01-note` la ou le montage s'appelle `01-notebook-x`, et la clause
+-- inverse (un montage loge SOUS le dossier du document) ne prouve aucune couverture.
+-- Quand plusieurs entrees couvrent, la plus longue gagne : c'est le montage le plus
+-- proche qui publie la lecon, pas la premiere ligne rencontree dans `.gitmodules`.
+-- La recherche est donc un balayage complet avec maximum, non une premiere
+-- correspondance.
+-- Retourne ("monte", entree, reste) | ("non-monte", nil, nil), `reste` etant le
+-- chemin du document relatif au POINT DE MONTAGE (vide quand le document siege sur
+-- le montage lui-meme).
+-- Branchements : DEUX, depuis la correction du 19 novembre -- le tier `montage` sur
+-- la racine rendue et le tier `couche` apres une seule descente. Cette fonction
+-- etait definie et jamais appelee, ce que son ancien en-tete consignait lui-meme.
 local function mount_covering(root, rel)
   if rel == nil or rel == "" then
-    return "non-monte", nil
+    return "non-monte", nil, nil
   end
+  local best, blen = nil, -1
   for _, e in ipairs(submodule_entries(root)) do
     local p = norm_dir(e.path or "")
-    if p ~= "" and (p == rel or rel:sub(1, #p + 1) == p .. "/" or p:sub(1, #rel + 1) == rel .. "/") then
-      return "monte", e
+    if p ~= "" and #p > blen and (rel == p or rel:sub(1, #p + 1) == p .. "/") then
+      best, blen = e, #p
     end
   end
-  return "non-monte", nil
+  if best == nil then
+    return "non-monte", nil, nil
+  end
+  local mp = norm_dir(best.path or "")
+  local reste = ""
+  if rel ~= mp then
+    reste = rel:sub(#mp + 2)
+  end
+  return "monte", best, reste
 end
 
 -- gitdir REELLEMENT LISIBLE pour un repertoire : `.git` repertoire, ou `.git`
@@ -420,6 +438,26 @@ local function repo_name(c)
   return c:match("([^/]+)$")
 end
 
+-- Nom `owner/name` tire d'une reference de depot (origine lue ou url declare), ou
+-- chaine vide. Un chemin de machine n'est JAMAIS un nom : la borne est un nom de
+-- depot ou rien (c'est le defaut G2 de la version publiee, qui emettait un chemin
+-- d'execution comme nom de depot).
+local function depot_name_from_ref(raw)
+  local c = canon_repo(raw)
+  if c == nil then
+    return ""
+  end
+  local o, r = c:match("^[^/]+/([^/]+)/([^/]+)$")
+  if o ~= nil then
+    return o .. "/" .. r
+  end
+  o, r = c:match("^([^/]+)/([^/]+)$")
+  if o ~= nil then
+    return o .. "/" .. r
+  end
+  return ""
+end
+
 -- Retourne la force verifiee (`organisation`, `nom-seul`, `nom`) ou nil.
 -- Garde NON tautologique par construction : la valeur declaree ne vient jamais du
 -- cote compare. `external_declared` est vrai quand la reference vient d'une source
@@ -453,39 +491,167 @@ local function repo_identity(origin_raw, declared, external_declared)
 end
 
 -- --------------------------------------------------------------------------
--- Engagement DECLARE par le superprojet pour un chemin de montage. Commande
--- choisie : `git -C <racine rendue> rev-parse HEAD:<chemin-de-montage>` (elle rend
--- directement les quarante caracteres ; `ls-tree` imposerait un decoupage de sa
--- sortie, donc une seconde chance de se tromper). La forme `safe.directory` est
--- reessayee : le refus d'appartenance a ete rencontre dans le conteneur de rendu.
--- Un echec n'est JAMAIS remplace par une valeur devinee.
+-- Engagement DECLARE par le superprojet pour un chemin de montage : la valeur du
+-- gitlink, c'est-a-dire l'objet enregistre par l'assemblage. Jamais le HEAD de
+-- l'arbre de travail du montage : un checkout peu profond ou detached rend les
+-- lectures de l'arbre de travail peu sures, et le seul objet qui dise ce que
+-- l'assemblage a publie est cette entree de son propre arbre.
+-- DEUX PIEGES fermes ici, tous deux rencontres sur ce corpus :
+--   * `git rev-parse HEAD:<chemin>` rend le sha d'un ARBRE quand le chemin est un
+--     simple repertoire. Ce sha fait quarante caracteres hexadecimaux et franchit
+--     donc tout test de forme : publie, il deviendrait un lien cliquable vers un
+--     objet qui n'est pas un engagement, c'est-a-dire une affirmation fausse.
+--     `ls-tree` est par consequent decode et FILTRE : mode `160000` et type
+--     `commit` exiges ; toute autre entree vaut `pas de gitlink`, jamais un sha.
+--   * `git log -1 --format=%ad` reussit et MENT dans un clone peu profond : aucune
+--     date de lecon ne peut venir de git ; ce filtre n'emet aucune date, donc aucune cle de date.
+-- La forme `safe.directory` est reessayee : le refus d'appartenance a ete rencontre
+-- dans le conteneur de rendu. Un echec n'est JAMAIS remplace par une valeur devinee.
+-- Retourne (sha, source) avec source dans `gitlink` | `gitlink-safe-directory`.
 -- --------------------------------------------------------------------------
+local function ls_tree_gitlink(args)
+  local out = pipe_git(args)
+  if out == nil then
+    return nil
+  end
+  for line in out:gmatch("[^\n]+") do
+    local mode, typ, sha = line:match("^(%d+)%s+(%a+)%s+(%x+)")
+    if mode == "160000" and typ == "commit" and is_sha(sha) then
+      return sha
+    end
+  end
+  return nil
+end
+
 local function gitlink_declared(proj, mpath)
-  local spec = "HEAD:" .. mpath
-  local v = pipe_git({ "-C", proj, "rev-parse", spec })
-  if v ~= nil and is_sha(v) then
+  local v = ls_tree_gitlink({ "-C", proj, "ls-tree", "HEAD", "--", mpath })
+  if v ~= nil then
     return v, "gitlink"
   end
-  v = pipe_git({ "-c", "safe.directory=*", "-C", proj, "rev-parse", spec })
-  if v ~= nil and is_sha(v) then
+  v = ls_tree_gitlink({ "-c", "safe.directory=*", "-C", proj, "ls-tree", "HEAD", "--", mpath })
+  if v ~= nil then
     return v, "gitlink-safe-directory"
   end
   return nil, nil
 end
 
 -- --------------------------------------------------------------------------
--- Provenance de la PAGE RENDUE : trois branches, chacune nommee dans l'artefact
--- `data-git-source`. Conservee du donneur, labels compris.
---   1 `racine-…`   : le document siege a la racine du projet rendu.
---   2 `gitlink-…`  : le document siege sous un montage declare de l'assemblage.
---   3 `repli-…`    : rien de verifie. Aucun sha, aucun lien.
+-- Engagement et identite d'une lecon rendue SOUS un montage : tier `montage` quand
+-- le montage est declare par la racine rendue, tier `couche` quand il est declare
+-- par un montage de premier niveau. L'identite est jugee entre DEUX SOURCES
+-- INDEPENDANTES du montage lui-meme : l'origine qu'en declare le `.gitmodules` du
+-- superprojet, et l'origine lue dans le depot du montage. Le cote declare recoit
+-- donc le nom du MONTAGE, non celui du SUPERPROJET : un sous-module nomme toujours
+-- un autre depot que son parent, et la comparaison d'avant, `nom contre nom` entre
+-- deux depots distincts, ne pouvait pas passer -- c'est ce qui produisait
+-- l'etiquette de repli retiree par cette correction. Les deux sources ne sont
+-- jamais prises dans le meme champ : comparees a elles-memes elles rendraient une
+-- verification tautologique, que ce fichier refuse par construction.
+-- Sur echec, AUCUNE valeur et AUCUN lien : une valeur non publiee n'est pas emise,
+-- jamais remplacee par un tiret.
+-- Retourne (sha, dir, source, reserve, tier, ref_de_lien, superroot).
 -- --------------------------------------------------------------------------
+local function mount_lesson(tier, superroot, mpath, entry)
+  local mountdir = norm_dir(superroot .. "/" .. mpath)
+  local sha, gsrc = gitlink_declared(superroot, mpath)
+  if sha == nil then
+    return nil, mountdir, "repli-gitlink-ilisible", nil, tier, nil
+  end
+  local declared = canon_repo(entry.url or "")
+  if declared == nil then
+    return nil, mountdir, "repli-declare-ilisible", nil, tier, nil
+  end
+  local gd = resolved_gitdir(mountdir)
+  local origin = nil
+  if gd ~= nil then
+    origin = origin_of(mountdir, gd)
+  end
+  if origin == nil or origin == "" then
+    -- Une declaration seule ne verifie rien : elle serait comparee a elle-meme.
+    return nil, mountdir, "repli-origine-illisible", nil, tier, nil
+  end
+  local force = repo_identity(origin, declared, true)
+  if force == nil then
+    return nil, mountdir, "repli-garde-identite", nil, tier, nil
+  end
+  -- La reference de lien est l'origine declaree du montage, seul depot qui puisse
+  -- porter le sha publie ; c'est l'appelant qui la resout en base, et qui n'invente
+  -- rien si elle n'est pas resoluble.
+  return sha, mountdir, tier .. "-" .. gsrc .. "-" .. force, nil, tier, entry.url,
+    superroot
+end
+
+-- --------------------------------------------------------------------------
+-- Provenance de la PAGE RENDUE. Le tier est decide par la COUVERTURE D'UN MONTAGE
+-- DECLARE, jamais par la seule profondeur du fichier. Le selecteur heredite
+-- `if rel == nil then` classait une lecon logee dans un sous-repertoire de SON
+-- PROPRE depot comme une lecon sous montage d'assemblage : ne trouvant aucun
+-- montage, il y publiait une reserve d'inaccessibilite que rien n'avait mesure,
+-- sur un site qui n'est pas un assemblage. Labels de tier :
+-- `<tier>-<source-du-sha>-<niveau-d'identite>`.
+--   `racine`      : le dossier du document EST la racine rendue. Corps et labels
+--                   conserves du donneur : c'est la seule branche qui publie une
+--                   phrase d'echec nommee, le depot en cause etant celui de la page.
+--   `hors-projet` : le document n'est pas sous la racine rendue : rien n'est affirme.
+--   `montage`     : un montage declare de la racine rendue couvre le document ; le
+--                   sha est le gitlink enregistre par ce superprojet.
+--   `couche`      : aucun montage declare ne couvre le document, mais son premier
+--                   composant est lui-meme un depot reel : on descend D'UN SEUL
+--                   niveau et on relit les declarations de ce depot. La descente est
+--                   bornee a un : plus profond, on retombe sur `propre` et on
+--                   remonte vers aucun depot qui ne publie pas cette page.
+--   `propre`      : le document est strictement sous la racine rendue et la remontee
+--                   bornee (R1.1) designe cette racine : son depot EST le projet
+--                   rendu, et c'est son engagement qui est publie.
+--   `tiers`       : R1.2, la remontee bornee designe un depot STRICTEMENT sous la
+--                   racine rendue que nul `.gitmodules` ne declare. Ce depot est un
+--                   TIERS du point de vue du projet rendu : il n'emmet AUCUN
+--                   engagement. Aucun sha, aucun lien, aucune prose d'echec, aucun
+--                   tiret ; le nom du depot est conserve par l'appelant et les puces
+--                   qui restent vraies (configuration partagee, licence) sont emises.
+-- Le sha de la lecon et la base du lien viennent toujours du MEME depot : sous
+-- `montage` et `couche` la base se derive de l'origine du montage, non de celle du
+-- projet rendu, qui nommerait un autre depot et publierait un lien mort.
+-- Retourne (sha, dir, source, reserve, tier, ref_de_lien, superroot).
+-- --------------------------------------------------------------------------
+
+-- R1.1 (specification d'architecture du 19 novembre) : la decouverte du depot d'une
+-- lecon ne franchit JAMAIS la racine du projet rendu. La remontee part du dossier du
+-- document et s'arrete a cette racine, incluse. Un depot trouve STRICTEMENT sous la
+-- racine n'est pas le depot rendu : c'est le defaut G4 que cette borne ferme (une
+-- lecon logee dans un sous-module non declare emettait la HEAD du cours).
+-- Retourne (dir, true) quand un gitdir est resolvable sur la borne, (dir, false)
+-- quand la racine rendue elle-meme ne porte aucun depot, (nil, false) sinon.
+local function nearest_repo_under(proj, startdir)
+  proj = norm_dir(proj)
+  local d = norm_dir(startdir)
+  while d ~= nil and d ~= "" do
+    if resolved_gitdir(d) ~= nil then
+      return d, true
+    end
+    if proj ~= "" then
+      if d == proj then
+        return d, false
+      end
+      if d:sub(1, #proj + 1) ~= proj .. "/" then
+        return nil, false
+      end
+    end
+    local up = parent_of(d)
+    if up == nil or up == d then
+      return nil, false
+    end
+    d = up
+  end
+  return nil, false
+end
+
 
 local function lesson_provenance(repo, external_declared)
   local proj = norm_dir(env("QUARTO_PROJECT_DIR"))
   local docv = trim(env("QUARTO_DOCUMENT_PATH") or "")
   if docv == "" then
-    return nil, nil, "repli-document-absent", nil
+    return nil, nil, "repli-document-absent", nil, "racine", nil
   end
 
   -- valeur donnee, absolutisee SANS reconstruction par basename ; un chemin de
@@ -499,16 +665,18 @@ local function lesson_provenance(repo, external_declared)
   end
   docdir = norm_dir(docdir)
 
+  -- Coordonnees du document RELATIVES A LA RACINE RENDUE : c'est dans ce seul
+  -- systeme que la couverture d'un montage se juge.
   local rel = nil
   if proj ~= "" and docdir ~= proj and docdir:sub(1, #proj + 1) == proj .. "/" then
     rel = docdir:sub(#proj + 2)
   end
 
-  -- ------------------------------ Branche 1 : racine du depot rendu.
-  if rel == nil then
+  -- ------------------------------ Tier `racine` : la page est au depot rendu.
+  if rel == nil and docdir == proj then
     local sha, gd, kind = head_of(docdir)
     if sha == nil then
-      return nil, docdir, "repli-" .. tostring(kind or "aucun-depot"), nil
+      return nil, docdir, "repli-" .. tostring(kind or "aucun-depot"), nil, "racine", nil
     end
     local origin = origin_of(docdir, gd) or ""
     local declared = repo
@@ -519,65 +687,71 @@ local function lesson_provenance(repo, external_declared)
     end
     local force = repo_identity(origin, declared, ext)
     if force == nil then
-      return nil, docdir, "repli-garde-identite", nil
+      return nil, docdir, "repli-garde-identite", nil, "racine", nil
     end
-    return sha, docdir, "racine-" .. tostring(kind) .. "-" .. force, nil
+    return sha, docdir, "racine-" .. tostring(kind) .. "-" .. force, nil, "racine",
+      nil, proj
   end
 
-  -- ------------------------------ Branche 2 : sous un montage declare.
-  -- Un chemin qui apparait dans l'arbre ne suffit PAS : le montage doit etre
-  -- declare par `.gitmodules` de l'assemblage, ou reel (un `.git` au point de
-  -- montage). Sinon c'est la branche 3.
-  local mpath, entry = nil, nil
-  for _, e in ipairs(submodule_entries(proj)) do
-    local p = norm_dir(e.path or "")
-    if p ~= "" and (p == rel or rel:sub(1, #p + 1) == p .. "/") then
-      mpath, entry = p, e
-      break
-    end
-  end
-  if mpath == nil then
-    local top = rel:match("^([^/]+)")
-    if top ~= nil and (slurp(proj .. "/" .. top .. "/.git") ~= nil
-      or slurp(proj .. "/" .. top .. "/.git/HEAD") ~= nil) then
-      mpath = top
-    end
-  end
-  if mpath == nil then
-    return nil, docdir, "repli-montage-non-declare", nil
+  -- ------------------------------ Tier `hors-projet` : rien n'est affirme.
+  -- Le document n'est pas sous la racine rendue : aucun depot ne peut etre
+  -- designe sans deviner, donc aucun sha et aucun lien ne sortent d'ici.
+  if rel == nil then
+    return nil, docdir, "repli-hors-projet", nil, "hors-projet", nil
   end
 
-  local sha, gsrc = gitlink_declared(proj, mpath)
+  -- ------------------------------ Tier `montage` : un declare couvre le document.
+  local covered, entry, _ = mount_covering(proj, rel)
+  if covered == "monte" then
+    return mount_lesson("montage", proj, norm_dir(entry.path or ""), entry)
+  end
+
+  -- ------------------------------ Tier `couche` : une seule descente.
+  -- Le premier composant est un depot reel sans etre declare a la racine : ses
+  -- declarations propres sont lues la, et une seule fois.
+  local top = rel:match("^([^/]+)")
+  if top ~= nil then
+    local inner = norm_dir(proj .. "/" .. top)
+    if resolved_gitdir(inner) ~= nil then
+      local c2, e2, _ = mount_covering(inner, rel:sub(#top + 2))
+      if c2 == "monte" then
+        return mount_lesson("couche", inner, norm_dir(e2.path or ""), e2)
+      end
+    end
+  end
+
+  -- ------------------------------ Tier `tiers` : R1.2, un depot non declare.
+  -- La remontee bornee (R1.1) designe un depot STRICTEMENT sous la racine rendue :
+  -- la lecon appartient a un depot que le projet rendu ne declare comme montage ni a
+  -- sa racine ni au premier niveau. Publier ici le sha du projet rendu affirmerait
+  -- que le cours engage le contenu d'un autre depot : c'est la regression G4. Aucun
+  -- engagement n'est donc emis : ni sha, ni mot « engagement », ni explication, et
+  -- surtout pas un tiret a la place d'une valeur non publiee.
+  local owner, found = nearest_repo_under(proj, docdir)
+  if found and owner ~= proj then
+    return nil, owner, "tiers-non-declare", nil, "tiers", nil, nil
+  end
+
+  -- ------------------------------ Tier `propre` : la lecon est au depot rendu.
+  -- Aucun montage ne la couvre : le depot qui porte le fichier est le projet rendu,
+  -- et son engagement est le bon lien. Meme paire de sources que le tier `racine`.
+  local sha, gd, kind = head_of(proj)
   if sha == nil then
-    return nil, docdir, "repli-gitlink-ilisible", nil
+    return nil, proj, "repli-" .. tostring(kind or "aucun-depot"), nil, "propre", nil
   end
-
-  local cr = canon_repo(repo)
-  if cr == nil then
-    cr = canon_repo(mpath)
+  local origin = origin_of(proj, gd) or ""
+  local declared = repo
+  local ext = external_declared
+  if declared == "" then
+    declared = origin
+    ext = false
   end
-  if cr == nil then
-    return nil, docdir, "repli-declare-ilisible", nil
+  local force = repo_identity(origin, declared, ext)
+  if force == nil then
+    return nil, proj, "repli-garde-identite", nil, "propre", nil
   end
-  local force = nil
-  if entry ~= nil then
-    force = repo_identity(entry.url or "", repo, external_declared)
-    if force == nil then
-      return nil, docdir, "repli-garde-identite-montage", nil
-    end
-  else
-    -- aucune declaration `.gitmodules` : seule la concordance du nom du point de
-    -- montage avec le depot declare parle, et elle ne vaut jamais `organisation`.
-    if repo_name(canon_repo(mpath)) ~= repo_name(cr) then
-      return nil, docdir, "repli-garde-identite-montage", nil
-    end
-    force = "nom-seul"
-  end
-  -- Quatrieme valeur du donneur (la reserve de la branche 2) : la surface signee
-  -- n'imprime aucune reserve. La provenance de la valeur reste publiee, par
-  -- l'etiquette seule, qui dit `gitlink-…` quand c'est bien la declaration de
-  -- l'assemblage qui a parle.
-  return sha, proj .. "/" .. mpath, gsrc .. "-" .. force, nil
+  return sha, proj, "propre-" .. tostring(kind) .. "-" .. force, nil, "propre", nil,
+    proj
 end
 
 -- --------------------------------------------------------------------------
@@ -1004,7 +1178,9 @@ local function repo_display(ver, meta, origin)
   if o ~= nil then
     return o .. "/" .. r, false
   end
-  return c, false
+  -- Ni plus, ni moins : une reference qui n'est ni `owner/name` ni `hote/owner/name`
+  -- est un chemin de machine, jamais un nom de depot. Elle n'est pas publiee.
+  return "", false
 end
 
 -- Base de l'URL de depot de la page : la reference qui a servi a nommer le depot,
@@ -1025,30 +1201,47 @@ local function colophon_blocks(ctx)
   local ver, meta, lesson, utils = ctx.ver, ctx.meta, ctx.lesson, ctx.utils
   local items = {}
 
-  -- 1. Depot, bras de version de l'execution, engagement de la page rendue.
+  -- 1. Depot, engagement de la page rendue, et VALEUR de cet engagement (ruling du
+  -- 19 novembre : deux etats nommes, plus le nom du projet qui rend).
   local parts = {}
   if ctx.repo ~= "" then
-    parts[#parts + 1] = { T("Dépôt "), T(ctx.repo) }
+    parts[#parts + 1] = { T("Contenu "), T(ctx.repo) }
   end
+  -- Ruling du 19 novembre, point 3 : aucune branche, sur aucune geometrie, sous
+  -- aucune forme. Le POINT D'EMISSION est retire, pas seulement la valeur. Le seul
+  -- nom de reference publie est une etiquette, quand l'execution en porte une.
   local rt = ver_str(ver, "ref_type"):lower()
   local rn = ver_str(ver, "ref_name")
-  if rn ~= "" and (rt == "branch" or rt == "tag") then
-    if rt == "branch" then
-      parts[#parts + 1] = { T("branche "), C(rn) }
-    else
-      parts[#parts + 1] = { T("version "), C(rn) }
-    end
+  if rt == "tag" and rn ~= "" then
+    parts[#parts + 1] = { T("version "), C(rn) }
   end
   local lshort = short7(lesson.sha)
   if lshort ~= nil then
-    local u = commit_url(ctx.repo_base, lesson.sha)
-    local seg = { T("commit ") }
+    local u = commit_url(lesson.base or ctx.repo_base, lesson.sha)
+    local seg = { T("engagement ") }
     for _, v in ipairs(link_or_code(lshort, u)) do
       seg[#seg + 1] = v
     end
+    if lesson.mounted then
+      -- Le sha est un gitlink enregistre par le projet qui rend : c'est lui qui
+      -- epingle, et il est nomme en texte simple, jamais en lien (ruling du 19
+      -- novembre, point 2). Sans nom resolvable le qualifiant est OMIS : une
+      -- non-valeur n'est pas une etiquette vide ni un tiret.
+      if ctx.super_repo ~= nil and ctx.super_repo ~= "" then
+        seg[#seg + 1] = T(", épinglé par ")
+        seg[#seg + 1] = T(ctx.super_repo)
+      end
+    else
+      seg[#seg + 1] = T(", état courant de ce dépôt")
+    end
     parts[#parts + 1] = seg
-  else
-    -- Une resolution qui echoue est dite, et AUCUN engagement n'est affirmé.
+  elseif lesson.tier == "racine" then
+    -- Seul le tier `racine` dit son echec : a la racine rendue, le depot en cause
+    -- EST celui de la page, donc nommer l'echec est une information. Les autres
+    -- tiers n'emettent ni sha, ni reserve, ni lien : une non-valeur etiquettee
+    -- est exactement le tiret que la consigne du corpus interdit.
+    -- Une resolution qui echoue est dite ici : elle nomme le depot en cause et
+    -- n'affirme aucun engagement, car aucun sha n'a ete resolu.
     parts[#parts + 1] = {
       T("commit non résolu au rendu (" .. tostring(lesson.src) .. ") : aucun engagement n'est affirmé ici")
     }
@@ -1340,7 +1533,8 @@ local function emit(doc)
 
   local ver = version_data()
   local repo, external = repo_display(ver, meta, nil)
-  local lsha, lroot, lsrc = lesson_provenance(repo, external)
+  local lsha, lroot, lsrc, _, ltier, lref, lsuper =
+    lesson_provenance(repo, external)
 
   -- Origine lue sur le depot de la page, au besoin seule source du nom affiche.
   local origin = ""
@@ -1352,7 +1546,51 @@ local function emit(doc)
     end
   end
 
+  -- Ruling du 19 novembre, point 4 : quand la lecon appartient a un depot autre que
+  -- la racine rendue (montage declare, couche, ou tiers non declare), le nom publie
+  -- comme CONTENU est celui de CE depot. Le fichier de version, lui, nomme le projet
+  -- qui rend : les deux ne sont pas le meme, et les confondre est G4.
+  local mounted = (ltier == "montage" or ltier == "couche")
+  if mounted or ltier == "tiers" then
+    local cand = ""
+    if lref ~= nil then
+      cand = depot_name_from_ref(lref)
+    end
+    if cand == "" and origin ~= "" then
+      cand = depot_name_from_ref(origin)
+    end
+    if cand ~= "" then
+      repo = cand
+    end
+  end
+
+  -- Le nom du projet qui epingle : le superprojet qui declare le montage, mesure a la
+  -- remontee, jamais le depot de la lecon. A defaut de superroot mesure, l'origine du
+  -- depot de la racine rendue, puis le nom declare par l'execution.
+  local super_repo = ""
+  if mounted then
+    local sroot = lsuper
+    if sroot == nil or sroot == "" then
+      sroot = norm_dir(env("QUARTO_PROJECT_DIR"))
+    end
+    local _, sgd = resolved_gitdir(sroot)
+    if sgd ~= nil then
+      super_repo = depot_name_from_ref(origin_of(sroot, sgd) or "")
+    end
+    if super_repo == "" then
+      super_repo = repo_display(ver, meta, nil)
+    end
+  end
+
   local lesson_base = repo_base_for(ver, meta, origin)
+  -- Sous montage (`montage`, `couche`) le sha publie est un engagement du MONTAGE :
+  -- sa base de lien ne peut pas venir du depot du projet rendu, qui nommerait un
+  -- autre depot. Sans base derivee, la valeur reste du texte : pas de lien, pas de
+  -- tiret, pas d'affirmation.
+  local lesson_link_base = nil
+  if ltier == "montage" or ltier == "couche" then
+    lesson_link_base = (lref ~= nil and github_base(lref)) or ""
+  end
   local lic_label, lic_url = license_from_meta(meta)
 
   trace_loaded(tostring(lsrc))
@@ -1361,9 +1599,13 @@ local function emit(doc)
     ver = ver,
     meta = meta,
     repo = repo,
+    super_repo = super_repo,
     repo_base = lesson_base,
     utils_base = utils_base(lesson_base),
-    lesson = { sha = lsha, src = lsrc },
+    lesson = {
+      sha = lsha, src = lsrc, tier = ltier, base = lesson_link_base,
+      mounted = mounted,
+    },
     utils = { sha = usha, src = usrc },
     lic_label = lic_label,
     lic_url = lic_url,
