@@ -239,7 +239,7 @@ jobs:
         # is byte-identical to its pre-staging form: unconditional, fatal.
         if: inputs.site-source != 'staging'
         continue-on-error: ${{ inputs.site-source == 'auto' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.site-artifact }}
           path: site-zip
